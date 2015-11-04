@@ -1,9 +1,11 @@
 // Runs a slew of generic command tests
 
-var utils = require("utils");
+var utils = {} // require("utils");
 const { module } = utils;
-var dactyllib = module("dactyl");
-var jumlib = module("resource://mozmill/modules/jum.js");
+var dactyllib = {} // module("dactyl");
+
+var assertions = {}; Components.utils.import('resource://mozmill/modules/assertions.js', assertions);
+var assert = new assertions.Assert();
 
 var setupModule = function (module) {
     controller = mozmill.getBrowserController();
@@ -989,7 +991,7 @@ function runTest(message, test, ...args) {
     if (test)
         var res = test.apply(null, args);
     if (res !== undefined)
-        jumlib.assert(res, message);
+        assert.assert(res, message);
 }
 
 for (var val in Iterator(tests)) (function ([command, paramsList]) {

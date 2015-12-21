@@ -18,10 +18,10 @@ lazyRequire("resource://gre/modules/DownloadUtils.jsm", ["DownloadUtils"]);
 var MAX_LOAD_TIME = 10 * 1000;
 
 let prefix = "DOWNLOAD_";
-var states = iter([v, k.slice(prefix.length).toLowerCase()]
-                  for ([k, v] of iter(Ci.nsIDownloadManager))
-                  if (k.startsWith(prefix)))
-                .toObject();
+var states = Ary.toObject(
+    Object.entries(Ci.nsIDownloadManager).filter(([key]) => key.startsWith(prefix))
+          .map(([key, val]) => [val,
+                                key.slice(prefix.length).toLowerCase()]));
 
 var Download = Class("Download", {
     init: function init(download, list) {
@@ -97,10 +97,10 @@ var Download = Class("Download", {
     }),
 
     command: function command(name) {
-        util.assert(hasOwnProperty(this.allowedCommands, name), _("download.unknownCommand"));
+        util.assert(hasOwnProp(this.allowedCommands, name), _("download.unknownCommand"));
         util.assert(this.allowedCommands[name], _("download.commandNotAllowed"));
 
-        if (hasOwnProperty(this.commands, name))
+        if (hasOwnProp(this.commands, name))
             this.commands[name].call(this);
     },
 
@@ -231,7 +231,7 @@ var DownloadList = Class("DownloadList",
         this.nodes = {
             commandTarget: this
         };
-        this.downloads = Map();
+        this.downloads = new Map();
     },
 
     cleanup: function cleanup() {
@@ -299,7 +299,7 @@ var DownloadList = Class("DownloadList",
     addDownload: function addDownload(download) {
         if (!this.downloads.has(download)) {
             download = Download(download, this);
-            if (this.filter && !download.displayName.contains(this.filter))
+            if (this.filter && !download.displayName.includes(this.filter))
                 return;
 
             this.downloads.set(download.download, download);
@@ -560,7 +560,7 @@ var Downloads_ = Module("downloads", XPCOM(Ci.nsIDownloadProgressListener), {
 
                 validator: function (value) {
                     let seen = new RealSet();
-                    return value.every(val => /^[+-]/.test(val) && hasOwnProperty(this.values, val.substr(1))
+                    return value.every(val => /^[+-]/.test(val) && hasOwnProp(this.values, val.substr(1))
                                                                 && !seen.add(val.substr(1)))
                         && value.length;
                 }

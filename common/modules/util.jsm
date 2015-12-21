@@ -61,6 +61,17 @@ var wrapCallback = function wrapCallback(fn, isEvent) {
     return fn.wrapper;
 };
 
+let anythingObjectHack = new Proxy({}, {
+    get(target, prop) {
+        util.dump("Attempt to access UI method before UI ready: " + prop);
+        return function(...args) {
+            util.dump(`Attempt to use UI method before UI ready: ${prop}(${args})`);
+
+            util.lateDactylMethods.push([prop, args]);
+        };
+    },
+});
+
 var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), {
     Magic: Magic,
 
@@ -69,60 +80,66 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
 
         this.addObserver(this);
         this.windows = [];
+        this.lateDactylMethods = [];
     },
 
-    activeWindow: deprecated("overlay.activeWindow", { get: function activeWindow() overlay.activeWindow }),
-    overlayObject: deprecated("overlay.overlayObject", { get: function overlayObject() overlay.bound.overlayObject }),
-    overlayWindow: deprecated("overlay.overlayWindow", { get: function overlayWindow() overlay.bound.overlayWindow }),
+    activeWindow: deprecated("overlay.activeWindow", { get: function activeWindow() { return overlay.activeWindow; } }),
+    overlayObject: deprecated("overlay.overlayObject", { get: function overlayObject() { return overlay.bound.overlayObject; } }),
+    overlayWindow: deprecated("overlay.overlayWindow", { get: function overlayWindow() { return overlay.bound.overlayWindow; } }),
 
-    compileMatcher: deprecated("DOM.compileMatcher", { get: function compileMatcher() DOM.compileMatcher }),
-    computedStyle: deprecated("DOM#style", function computedStyle(elem) DOM(elem).style),
-    domToString: deprecated("DOM.stringify", { get: function domToString() DOM.stringify }),
-    editableInputs: deprecated("DOM.editableInputs", { get: function editableInputs(elem) DOM.editableInputs }),
-    escapeHTML: deprecated("DOM.escapeHTML", { get: function escapeHTML(elem) DOM.escapeHTML }),
+    compileMatcher: deprecated("DOM.compileMatcher", { get: function compileMatcher() { return DOM.compileMatcher; } }),
+    computedStyle: deprecated("DOM#style", function computedStyle(elem) { return DOM(elem).style; }),
+    domToString: deprecated("DOM.stringify", { get: function domToString() { return DOM.stringify; } }),
+    editableInputs: deprecated("DOM.editableInputs", { get: function editableInputs(elem) { return DOM.editableInputs; } }),
+    escapeHTML: deprecated("DOM.escapeHTML", { get: function escapeHTML(elem) { return DOM.escapeHTML; } }),
+
     evaluateXPath: deprecated("DOM.XPath",
-        function evaluateXPath(path, elem, asIterator) DOM.XPath(path, elem || util.activeWindow.content.document, asIterator)),
-    isVisible: deprecated("DOM#isVisible", function isVisible(elem) DOM(elem).isVisible),
-    makeXPath: deprecated("DOM.makeXPath", { get: function makeXPath(elem) DOM.makeXPath }),
-    namespaces: deprecated("DOM.namespaces", { get: function namespaces(elem) DOM.namespaces }),
-    namespaceNames: deprecated("DOM.namespaceNames", { get: function namespaceNames(elem) DOM.namespaceNames }),
-    parseForm: deprecated("DOM#formData", function parseForm(elem) values(DOM(elem).formData).toArray()),
-    scrollIntoView: deprecated("DOM#scrollIntoView", function scrollIntoView(elem, alignWithTop) DOM(elem).scrollIntoView(alignWithTop)),
-    validateMatcher: deprecated("DOM.validateMatcher", { get: function validateMatcher() DOM.validateMatcher }),
+                              function evaluateXPath(path, elem, asIterator) {
+                                  return DOM.XPath(path, elem || util.activeWindow.content.document, asIterator);
+                              }),
 
-    map: deprecated("iter.map", function map(obj, fn, self) iter(obj).map(fn, self).toArray()),
-    writeToClipboard: deprecated("dactyl.clipboardWrite", function writeToClipboard(str, verbose) util.dactyl.clipboardWrite(str, verbose)),
-    readFromClipboard: deprecated("dactyl.clipboardRead", function readFromClipboard() util.dactyl.clipboardRead(false)),
+    isVisible: deprecated("DOM#isVisible", function isVisible(elem) { return DOM(elem).isVisible; }),
+    makeXPath: deprecated("DOM.makeXPath", { get: function makeXPath(elem) { return DOM.makeXPath; } }),
+    namespaces: deprecated("DOM.namespaces", { get: function namespaces(elem) { return DOM.namespaces; } }),
+    namespaceNames: deprecated("DOM.namespaceNames", { get: function namespaceNames(elem) { return DOM.namespaceNames; } }),
+    parseForm: deprecated("DOM#formData", function parseForm(elem) { return values(DOM(elem).formData).toArray(); }),
+    scrollIntoView: deprecated("DOM#scrollIntoView", function scrollIntoView(elem, alignWithTop) { return DOM(elem).scrollIntoView(alignWithTop); }),
+    validateMatcher: deprecated("DOM.validateMatcher", { get: function validateMatcher() { return DOM.validateMatcher; } }),
 
-    chromePackages: deprecated("config.chromePackages", { get: function chromePackages() config.chromePackages }),
-    haveGecko: deprecated("config.haveGecko", { get: function haveGecko() config.bound.haveGecko }),
-    OS: deprecated("config.OS", { get: function OS() config.OS }),
+    map: deprecated("iter.map", function map(obj, fn, self) { return iter(obj).map(fn, self).toArray(); }),
+    writeToClipboard: deprecated("dactyl.clipboardWrite", function writeToClipboard(str, verbose) { return util.dactyl.clipboardWrite(str, verbose); }),
+    readFromClipboard: deprecated("dactyl.clipboardRead", function readFromClipboard() { return util.dactyl.clipboardRead(false); }),
 
-    identity: deprecated("identity", { get: function identity() global.identity }),
+    chromePackages: deprecated("config.chromePackages", { get: function chromePackages() { return config.chromePackages; } }),
+    haveGecko: deprecated("config.haveGecko", { get: function haveGecko() { return config.bound.haveGecko; } }),
+    OS: deprecated("config.OS", { get: function OS() { return config.OS; } }),
 
-    dactyl: update(function dactyl(obj) {
+    identity: deprecated("identity", { get: function identity() { return global.identity; } }),
+
+    dactyl: new Proxy(function (obj) {
+        let global;
         if (obj)
-            var global = Class.objectGlobal(obj);
+            global = Class.objectGlobal(obj);
 
-        return {
-            __noSuchMethod__: function __noSuchMethod__(meth, args) {
-                let win = overlay.activeWindow;
-
-                var dactyl = global && global.dactyl || win && win.dactyl;
-                if (!dactyl)
-                    return null;
-
-                let prop = dactyl[meth];
-                if (callable(prop))
-                    return prop.apply(dactyl, args);
-                return prop;
-            }
-        };
+        return (global && global.dactyl ||
+                loaded.overlay && overlay.activeWindow && overlay.activeWindow.dactyl ||
+                anythingObjectHack);
     }, {
-        __noSuchMethod__: function __noSuchMethod__() {
-            return this().__noSuchMethod__.apply(null, arguments);
-        }
+        get(target, prop) {
+            if (prop in target)
+                return target[prop];
+
+            return target()[prop];
+        },
     }),
+
+    flushLateMethods(dactyl) {
+        while (this.lateDactylMethods.length) {
+            let [meth, args] = this.lateDactylMethods.shift();
+
+            this.trapErrors(meth, dactyl, ...args);
+        }
+    },
 
     /**
      * Registers a obj as a new observer with the observer service. obj.observe
@@ -379,14 +396,15 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
 
         let defaults = { lt: "<", gt: ">" };
 
-        let re = util.regexp(literal(function () /*
+        let re = util.regexp(String.raw`
             ([^]*?) // 1
             (?:
                 (<\{) | // 2
                 (< ((?:[a-z]-)?[a-z-]+?) (?:\[([0-9]+)\])? >) | // 3 4 5
                 (\}>) // 6
             )
-        */$), "gixy");
+        `, "gixy");
+
         macro = String(macro);
         let end = 0;
         for (let match of re.iterate(macro)) {
@@ -416,7 +434,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
                 if (flags.has("e"))
                     quote = function quote(obj) { return ""; };
 
-                if (hasOwnProperty(defaults, name))
+                if (hasOwnProp(defaults, name))
                     stack.top.elements.push(quote(defaults[name]));
                 else {
                     let index = idx;
@@ -424,7 +442,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
                         idx = Number(idx) - 1;
                         stack.top.elements.push(update(
                             obj => obj[name] != null && idx in obj[name] ? quote(obj[name][idx])
-                                                                         : hasOwnProperty(obj, name) ? "" : unknown(full),
+                                                                         : hasOwnProp(obj, name) ? "" : unknown(full),
                             {
                                 test: function test(obj) {
                                     return obj[name] != null &&
@@ -437,7 +455,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
                     else {
                         stack.top.elements.push(update(
                             obj => obj[name] != null ? quote(obj[name])
-                                                     : hasOwnProperty(obj, name) ? "" : unknown(full),
+                                                     : hasOwnProp(obj, name) ? "" : unknown(full),
                             {
                                 test: function test(obj) {
                                     return obj[name] != null &&
@@ -509,7 +527,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
                 return obj.res;
             }
 
-            if (!pattern.contains("{"))
+            if (!pattern.includes("{"))
                 return [pattern];
 
             let res = [];
@@ -543,7 +561,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
             rec([]);
             return res;
         }
-        catch (e if e.message && e.message.contains("res is undefined")) {
+        catch (e if e.message && e.message.includes("res is undefined")) {
             // prefs.safeSet() would be reset on :rehash
             prefs.set("javascript.options.methodjit.chrome", false);
             util.dactyl.warn(_(UTF8("error.damnYouJägermonkey")));
@@ -572,7 +590,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
      */
     dequote: function dequote(pattern, chars) {
         return pattern.replace(/\\(.)/,
-                               (m0, m1) => chars.contains(m1) ? m1 : m0);
+                               (m0, m1) => chars.includes(m1) ? m1 : m0);
     },
 
     /**
@@ -790,7 +808,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
 
         try {
             let xmlhttp = services.Xmlhttp();
-            xmlhttp.mozBackgroundRequest = hasOwnProperty(params, "background") ? params.background : true;
+            xmlhttp.mozBackgroundRequest = hasOwnProp(params, "background") ? params.background : true;
 
             let async = params.callback || params.onload || params.onerror;
             if (async) {
@@ -799,8 +817,9 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
             }
 
             if (isObject(params.params)) {
-                let data = [encodeURIComponent(k) + "=" + encodeURIComponent(v)
-                            for ([k, v] of iter(params.params))];
+                let encode = ([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`;
+                let data = Object.entries(params).map(encode);
+
                 let uri = util.newURI(url);
                 uri.query += (uri.query ? "&" : "") + data.join("&");
 
@@ -954,22 +973,26 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
     },
 
     // ripped from Firefox; modified
-    unsafeURI: Class.Memoize(() => util.regexp(String.replace(literal(function () /*
-            [
-                \s
-                // Invisible characters (bug 452979)
-                U001C U001D U001E U001F // file/group/record/unit separator
-                U00AD // Soft hyphen
-                UFEFF // BOM
-                U2060 // Word joiner
-                U2062 U2063 // Invisible times/separator
-                U200B UFFFC // Zero-width space/no-break space
+    unsafeURI: Class.Memoize(() => {
+        return util.regexp(
+            String.raw`
+                [
+                    \s
+                    // Invisible characters (bug 452979)
+                    U001C U001D U001E U001F // file/group/record/unit separator
+                    U00AD // Soft hyphen
+                    UFEFF // BOM
+                    U2060 // Word joiner
+                    U2062 U2063 // Invisible times/separator
+                    U200B UFFFC // Zero-width space/no-break space
 
-                // Bidi formatting characters. (RFC 3987 sections 3.2 and 4.1 paragraph 6)
-                U200E U200F U202A U202B U202C U202D U202E
-            ]
-        */$), /U/g, "\\u"),
-        "gx")),
+                    // Bidi formatting characters. (RFC 3987 sections 3.2 and 4.1 paragraph 6)
+                    U200E U200F U202A U202B U202C U202D U202E
+                ]
+            `.replace(/U/g, "\\u"),
+            "gx");
+    }),
+
     losslessDecodeURI: function losslessDecodeURI(url) {
         return url.split("%25").map(function (url) {
                 // Non-UTF-8 compliant URLs cause "malformed URI sequence" errors.
@@ -1284,8 +1307,14 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
      * @returns {RegExp} A custom regexp object.
      */
     regexp: update(function (expr, flags, tokens) {
-        flags = flags || [k for ([k, v] of iter({ g: "global", i: "ignorecase", m: "multiline", y: "sticky" }))
-                          if (expr[v])].join("");
+        if (!flags)
+            flags = Object.entries({ g: "global",
+                                     i: "ignorecase",
+                                     m: "multiline",
+                                     y: "sticky" })
+                          .filter(([short, full]) => expr[full])
+                          .map(([short]) => short)
+                          .join("");
 
         if (isinstance(expr, ["RegExp"]))
             expr = expr.source;
@@ -1303,10 +1332,10 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
         // Replace replacement <tokens>.
         if (tokens)
             expr = String.replace(expr, /(\(?P)?<(\w+)>/g,
-                                  (m, n1, n2) => !n1 && hasOwnProperty(tokens, n2) ?    tokens[n2].dactylSource
-                                                                                     || tokens[n2].source
-                                                                                     || tokens[n2]
-                                                                                   : m);
+                                  (m, n1, n2) => !n1 && hasOwnProp(tokens, n2) ?    tokens[n2].dactylSource
+                                                                                 || tokens[n2].source
+                                                                                 || tokens[n2]
+                                                                               : m);
 
         // Strip comments and white space.
         if (/x/.test(flags))
@@ -1380,7 +1409,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
          * @param {number} lastIndex The index at which to begin searching. @optional
          */
         iterate: function iterate(regexp, string, lastIndex) {
-            return iter(new function* () {
+            return iter(function* () {
                 regexp.lastIndex = lastIndex = lastIndex || 0;
                 let match;
                 while (match = regexp.exec(string)) {
@@ -1390,7 +1419,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
                     if (match[0].length == 0 || !regexp.global)
                         break;
                 }
-            });
+            }());
         }
     }),
 
@@ -1449,7 +1478,8 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
             this.errors.push([new Date, obj + "\n" + obj.stack]);
             this.errors = this.errors.slice(-this.maxErrors);
             this.errors.toString = function () {
-                return [k + "\n" + v for ([k, v] of this)].join("\n\n");
+                return this.map(([name, stack]) => `${name}\n${stack}\n`)
+                           .join("\n");
             };
 
             this.dump(String(error));
@@ -1462,6 +1492,7 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
                 this.dump(util.stackLines(error.stack).join("\n"));
             }
             catch (e) { dump(e + "\n"); }
+            dump("Stack: " + Error().stack + "\n");
         }
 
         // ctypes.open("libc.so.6").declare("kill", ctypes.default_abi, ctypes.void_t, ctypes.int, ctypes.int)(
@@ -1486,9 +1517,11 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
         }
         catch (e) {}
 
-        let ary = host.split(".");
-        ary = [ary.slice(i).join(".") for (i of util.range(ary.length, 0, -1))];
-        return ary.filter(h => h.length >= base.length);
+        let parts = host.split(".");
+
+        return Array.from(util.range(parts.length, 0, -1),
+                          i => parts.slice(i).join("."))
+                    .filter(host => host.length >= base.length);
     },
 
     /**
@@ -1704,11 +1737,12 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
      * @returns {Window} The top-level parent window.
      */
     topWindow: function topWindow(win) {
-        return win.QueryInterface(Ci.nsIInterfaceRequestor)
-                  .getInterface(Ci.nsIWebNavigation)
-                  .QueryInterface(Ci.nsIDocShellTreeItem).rootTreeItem
-                  .QueryInterface(Ci.nsIInterfaceRequestor)
-                  .getInterface(Ci.nsIDOMWindow);
+        let docShell =  win.QueryInterface(Ci.nsIInterfaceRequestor)
+                           .getInterface(Ci.nsIDocShell);
+        let { rootTreeItem } = docShell;
+        if (rootTreeItem)
+            return rootTreeItem.QueryInterface(Ci.nsIInterfaceRequestor)
+                               .getInterface(Ci.nsIDOMWindow);
     },
 
     /**
@@ -1717,11 +1751,9 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
      * @param {function} func The function to call
      * @param {object} self The 'this' object for the function.
      */
-    trapErrors: function trapErrors(func, self) {
+    trapErrors: function trapErrors(func, self, ...args) {
         try {
-            if (!callable(func))
-                func = self[func];
-            return func.apply(self || this, Array.slice(arguments, 2));
+            return apply(self || this, func, args);
         }
         catch (e) {
             this.reportError(e);
@@ -1755,9 +1787,9 @@ var Util = Module("Util", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference]), 
      * @returns {Generator(nsIDOMWindow)}
      */
     iterFrames: function* iterFrames(win) {
-            yield win;
-            for (let i = 0; i < win.frames.length; i++)
-                yield* iterFrames(win.frames[i]);
+        yield win;
+        for (let i = 0; i < win.frames.length; i++)
+            yield* iterFrames(win.frames[i]);
     },
 
     /**

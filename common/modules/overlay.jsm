@@ -71,10 +71,10 @@ var Overlay = Module("Overlay", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReferen
         let doc = target.ownerDocument || target.document || target;
         let listeners = this.getData(doc, "listeners");
 
-        if (!isObject(event))
-            var [self, events] = [null, Ary.toObject([[event, callback]])];
+        if (isObject(event))
+            var [self, events] = [event, event[callback || "events"]];
         else
-            [self, events] = [event, event[callback || "events"]];
+            [self, events] = [null, { [event]: callback }];
 
         for (let [event, callback] of iter(events)) {
             let args = [Cu.getWeakReference(target),
@@ -296,10 +296,8 @@ var Overlay = Module("Overlay", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReferen
         function insert(key, fn) {
             if (obj[key]) {
                 let iterator = iter(obj[key]);
-                if (isArray(obj[key])) {
-                    iterator = ([elem[1].id, elem.slice(2), elem[1]]
-                                for (elem of obj[key]));
-                }
+                if (isArray(obj[key]))
+                    iterator = obj[key].map(elem => [elem[1].id, elem.slice(2), elem[1]]);
 
                 for (let [elem, xml, attrs] of iterator) {
                     if (elem = doc.getElementById(String(elem))) {
@@ -425,7 +423,7 @@ var Overlay = Module("Overlay", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReferen
                 delete desc.writable;
                 desc.get = function get() { return value; }
                 desc.set = function set(val) {
-                    if (!callable(val) || !Function.prototype.toString(val).contains(sentinel))
+                    if (!callable(val) || !Function.prototype.toString(val).includes(sentinel))
                         Class.replaceProperty(this, k, val);
                     else {
                         let package_ = util.newURI(Components.stack.caller.filename).host;
@@ -479,7 +477,7 @@ var Overlay = Module("Overlay", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReferen
         return this.activeWindow && this.activeWindow.dactyl.modules;
     },
 
-    get modules() { return [w.dactyl.modules for (w of this.windows)]; },
+    get modules() { return Array.from(this.windows, win => win.dactyl.modules) },
 
     /**
      * The most recently active dactyl window.
@@ -489,7 +487,12 @@ var Overlay = Module("Overlay", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReferen
         return this.windows.has(win) && win;
     },
 
-    set activeWindow(win) { this._activeWindow = util.weakReference(win); },
+    set activeWindow(win) {
+        this._activeWindow = util.weakReference(win);
+
+        if (win.dactyl)
+            util.flushLateMethods(win.dactyl);
+    },
 
     /**
      * A list of extant dactyl windows.

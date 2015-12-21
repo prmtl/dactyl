@@ -219,11 +219,24 @@ var IO = Module("io", {
         };
     },
 
+    shell: Class.Memoize(() => {
+        if (config.OS.isWindows)
+            return "cmd.exe";
+        else
+            return services.environment.get("SHELL") || "sh";
+    }),
+
+    shellcmdflag: Class.Memoize(() => {
+        if (config.OS.isWindows)
+            return "/c";
+        else
+            return "-c";
+    }),
+
     charsets: Class.Memoize(function () {
         const BASE = "@mozilla.org/intl/unicode/decoder;1?charset=";
-        return [k.slice(BASE.length)
-                for (k of Object.keys(Cc))
-                if (k.startsWith(BASE))];
+        return Object.keys(Cc).filter(k.startsWith(BASE))
+                     .map(k => k.slice(BASE.length));
     }),
 
     charsetBundle: Class.Memoize(
@@ -313,7 +326,7 @@ var IO = Module("io", {
      */
     sourcing: null,
 
-    expandPath: deprecated("File.expandPath", function expandPath() apply(File, "expandPath", arguments)),
+    expandPath: deprecated("File.expandPath", function expandPath() { return apply(File, "expandPath", arguments); }),
 
     /**
      * Returns the first user RC file found in *dir*.
@@ -514,12 +527,14 @@ var IO = Module("io", {
      *      command string or an array of strings (a command and arguments)
      *      which will be escaped and concatenated.
      * @param {string} input Any input to be provided to the command on stdin.
-     * @param {function(object)} callback A callback to be called when
-     *      the command completes. @optional
+     * @param {function(object) | boolean} async A callback to be called when
+     *      the command completes, or a boolean indicating that a
+     *      promise should be returned. @optional
      * @returns {object|null}
      */
-    system: function system(command, input, callback) {
-        util.dactyl.echomsg(_("io.callingShell", command), 4);
+    system: function system(command, input = "", async = false) {
+        if (loaded.overlay)
+            util.dactyl.echomsg(_("io.callingShell", command), 4);
 
         let { shellEscape } = util.bound;
 
@@ -530,27 +545,44 @@ var IO = Module("io", {
                 stdin.write(input);
 
             function result(status, output) {
-                return {
-                    __noSuchMethod__: function (meth, args) {
-                        return apply(this.output, meth, args);
-                    },
-                    valueOf: function () { return this.output; },
-                    output: output.replace(/^(.*)\n$/, "$1"),
-                    returnValue: status,
-                    toString: function () { return this.output; }
-                };
+                return new Proxy(
+                    {
+                        valueOf: function () { return this.output; },
+                        output: output.replace(/^(.*)\n$/, "$1"),
+                        returnValue: status,
+                        toString: function () { return this.output; },
+                    }, {
+                        get(target, prop) {
+                            if (prop in target)
+                                return target[prop];
+
+                            return target.output[prop];
+                        },
+                    });
             }
 
-            function async(status) {
-                let output = stdout.read();
-                for (let f of [stdin, stdout, cmd])
-                    if (f.exists())
-                        f.remove(false);
-                callback(result(status, output));
+            let deferred;
+            let promise = new Promise((resolve, reject) => {
+                deferred = { resolve, reject };
+            });
+            if (callable(async))
+                promise.then(async);
+
+            function handleResult(status) {
+                stdout.async.read().then(output => {
+                    deferred.resolve(result(status, output));
+                });
             }
 
-            let shell = io.pathSearch(storage["options"].get("shell").value);
-            let shcf = storage["options"].get("shellcmdflag").value;
+            if (!storage["options"])
+                var { shell, shellcmdflag } = this;
+            else {
+                shell = storage["options"].get("shell").value;
+                shellcmdflag = storage["options"].get("shellcmdflag").value;
+            }
+
+            shell = io.pathSearch(shell);
+
             util.assert(shell, _("error.invalid", "'shell'"));
 
             if (isArray(command))
@@ -559,16 +591,18 @@ var IO = Module("io", {
             // TODO: implement 'shellredir'
             if (config.OS.isWindows && !/sh/.test(shell.leafName)) {
                 command = "cd /D " + this.cwd.path + " && " + command + " > " + stdout.path + " 2>&1" + " < " + stdin.path;
-                var res = this.run(shell, shcf.split(/\s+/).concat(command), callback ? async : true);
+                var res = this.run(shell, shellcmdflag.split(/\s+/).concat(command), async ? handleResult : true);
             }
             else {
                 cmd.write("cd " + shellEscape(this.cwd.path) + "\n" +
                           ["exec", ">" + shellEscape(stdout.path), "2>&1", "<" + shellEscape(stdin.path),
-                          shellEscape(shell.path), shcf, shellEscape(command)].join(" "));
-                res = this.run("/bin/sh", ["-e", cmd.path], callback ? async : true);
+                          shellEscape(shell.path), shellcmdflag, shellEscape(command)].join(" "));
+                res = this.run("/bin/sh", ["-e", cmd.path], async ? handleResult : true);
             }
 
-            return callback ? true : result(res, stdout.read());
+            if (async)
+                return promise;
+            return result(res, stdout.read());
         }, this, true);
     },
 
@@ -584,16 +618,25 @@ var IO = Module("io", {
      *     otherwise, the return value of *func*.
      */
     withTempFiles: function withTempFiles(func, self, checked, ext, label) {
-        let args = Ary(util.range(0, func.length))
-                    .map(bind("createTempFile", this, ext, label)).array;
+        let args = Array.from(util.range(0, func.length),
+                              () => this.createTempFile(ext, label));
+
+        function cleanup() {
+            // XXX: Sync.
+            args.forEach(f => { f.remove(false); });
+        }
+
         try {
             if (!args.every(identity))
                 return false;
+
             var res = func.apply(self || this, args);
         }
         finally {
-            if (!checked || res !== true)
-                args.forEach(f => { f.remove(false); });
+            if (res && typeof res === "object" && "then" in res && callable(res.then))
+                res.then(cleanup, cleanup);
+            else if (!checked || res !== true)
+                cleanup();
         }
         return res;
     }
@@ -615,7 +658,7 @@ var IO = Module("io", {
     /**
      * @property {string} The current platform's path separator.
      */
-    PATH_SEP: deprecated("File.PATH_SEP", { get: function PATH_SEP() File.PATH_SEP })
+    PATH_SEP: deprecated("File.PATH_SEP", { get: function PATH_SEP() { return File.PATH_SEP; } })
 }, {
     commands: function initCommands(dactyl, modules, window) {
         const { commands, completion, io } = modules;
@@ -674,11 +717,10 @@ var IO = Module("io", {
                 dactyl.assert(!file.exists() || args.bang, _("io.exists", JSON.stringify(file.path)));
 
                 // TODO: Use a set/specifiable list here:
-                let lines = [cmd.serialize().map(commands.commandToString, cmd)
-                             for (cmd of commands.iterator())
-                             if (cmd.serialize)];
-
-                lines = Ary.flatten(lines);
+                let lines = Array.from(commands.iterator())
+                                 .filter(cmd => cmd.serialize)
+                                 .flatMap(cmd => cmd.serialize()
+                                                    .map(commands.commandToString, cmd));
 
                 lines.unshift('"' + config.version + "\n");
                 lines.push("\n\" vim: set ft=" + config.name + ":");
@@ -723,13 +765,13 @@ var IO = Module("io", {
                 }
 
                 rtItems.ftdetect.template = //{{{
-literal(function () /*" Vim filetype detection file
+String.raw`" Vim filetype detection file
 <header>
 
 au BufNewFile,BufRead *<name>rc*,*.<fileext> set filetype=<name>
-*/$);//}}}
+`;//}}}
                 rtItems.ftplugin.template = //{{{
-literal(function () /*" Vim filetype plugin file
+String.raw`" Vim filetype plugin file
 <header>
 
 if exists("b:did_ftplugin")
@@ -754,9 +796,9 @@ endif
 
 let &cpo = s:cpo_save
 unlet s:cpo_save
-*/$);//}}}
+`; //}}}
                 rtItems.syntax.template = //{{{
-literal(function () /*" Vim syntax file
+String.raw`" Vim syntax file
 <header>
 
 if exists("b:current_syntax")
@@ -835,7 +877,7 @@ let &cpo = s:cpo_save
 unlet s:cpo_save
 
 " vim: tw=130 et ts=8 sts=4 sw=4:
-*/$);//}}}
+`;//}}} "
 
                 const { options } = modules;
 
@@ -871,15 +913,21 @@ unlet s:cpo_save
                     appname: config.appName,
                     fileext: config.fileExtension,
                     maintainer: "Doug Kearns <dougkearns@gmail.com>",
+
                     autocommands: wrap("syn keyword " + config.name + "AutoEvent ",
-                                       keys(config.autocommands)),
+                                       Object.keys(config.autocommands)),
+
                     commands: wrap("syn keyword " + config.name + "Command ",
-                                  Ary(c.specs for (c of commands.iterator())).flatten()),
+                                   Array.from(commands.iterator()).flatMap(cmd => cmd.specs)),
+
                     options: wrap("syn keyword " + config.name + "Option ",
-                                  Ary(o.names for (o of options) if (o.type != "boolean")).flatten()),
+                                  Array.from(options).filter(opt => opt.type != "boolean")
+                                                     .flatMap(opt => opt.names)),
+
                     toggleoptions: wrap("let s:toggleOptions = [",
-                                        Ary(o.realNames for (o of options) if (o.type == "boolean"))
-                                            .flatten().map(JSON.stringify),
+                                        Array.from(options).filter(opt => opt.type == "boolean")
+                                                           .flatMap(opt => opt.realNames)
+                                                           .map(JSON.stringify),
                                         ", ") + "]"
                 }; //}}}
 
@@ -918,13 +966,14 @@ unlet s:cpo_save
         commands.add(["scrip[tnames]"],
             "List all sourced script names",
             function () {
-                let names = [k for (k of io._scriptNames)];
+                let names = Array.from(io._scriptNames);
                 if (!names.length)
                     dactyl.echomsg(_("command.scriptnames.none"));
                 else
                     modules.commandline.commandOutput(
                         template.tabular(["<SNR>", "Filename"], ["text-align: right; padding-right: 1em;"],
-                            ([i + 1, file] for ([i, file] of iter(names)))));
+                                         Array.from(names.entries(),
+                                                    ([i, file]) => [i + 1, file])));
 
             },
             { argCount: "0" });
@@ -1034,12 +1083,26 @@ unlet s:cpo_save
 
             context.title = [full ? "Path" : "Filename", "Type"];
             context.keys = {
-                text: !full ? "leafName" : function (f) this.path,
-                path: function (f) dir + f.leafName,
-                description: function (f) this.isdir ? "Directory" : "File",
-                isdir: function (f) f.isDirectory(),
-                icon: function (f) this.isdir ? "resource://gre/res/html/folder.png"
-                                              : "moz-icon://" + f.leafName
+                text: !full ? "leafName" : function (f) { return this.path },
+
+                path(f) {
+                    return dir + f.leafName;
+                },
+
+                description(f) {
+                    return this.isdir ? "Directory" : "File";
+                },
+
+                isdir(f) {
+                    return f.isDirectory();
+                },
+
+                icon(f) {
+                    if (this.isdir)
+                        return "resource://gre/res/html/folder.png";
+
+                    return "moz-icon://" + f.leafName;
+                },
             };
             context.compare = (a, b) => b.isdir - a.isdir || String.localeCompare(a.text, b.text);
 
@@ -1051,20 +1114,20 @@ unlet s:cpo_save
             let uri = io.isJarURL(dir);
             if (uri)
                 context.generate = function generate_jar() {
-                    return [
-                        {
-                              isDirectory: function () s.substr(-1) == "/",
-                              leafName: /([^\/]*)\/?$/.exec(s)[1]
-                        }
-                        for (s of io.listJar(uri.JARFile, getDir(uri.JAREntry)))];
+                    return Array.from(io.listJar(uri.JARFile, getDir(uri.JAREntry)),
+                                      path => ({
+                                          isDirectory: () => path.substr(-1) == "/",
+                                          leafName: /([^\/]*)\/?$/.exec(s)[1]
+                                      }));
                 };
             else
                 context.generate = function generate_file() {
                     try {
                         return io.File(file || dir).readDirectory();
                     }
-                    catch (e) {}
-                    return [];
+                    catch (e) {
+                        return [];
+                    }
                 };
         };
 
@@ -1084,21 +1147,19 @@ unlet s:cpo_save
             context.title = ["Shell Command", "Path"];
             context.generate = () => {
                 let dirNames = services.environment.get("PATH").split(config.OS.pathListSep);
-                let commands = [];
 
-                for (let dirName of dirNames) {
+                return dirNames.flatMap(dirName => {
                     let dir = io.File(dirName);
                     if (dir.exists() && dir.isDirectory())
-                        commands.push([[file.leafName, dir.path] for (file of iter(dir.directoryEntries))
-                                       if (file.isFile() && file.isExecutable())]);
-                }
-
-                return Ary.flatten(commands);
+                        return Array.from(dir.directoryEntries)
+                                    .filter(file => file.isFile() && file.isExecutable())
+                                    .map(file => [file.leafName, dir.path])
+                });
             };
         };
 
         completion.addUrlCompleter("file", "Local files", function (context, full) {
-            let match = util.regexp(literal(function () /*
+            let match = util.regexp(String.raw`
                 ^
                 (?P<prefix>
                     (?P<proto>
@@ -1109,7 +1170,7 @@ unlet s:cpo_save
                 )
                 (?P<path> \/[^\/]* )?
                 $
-            */$), "x").exec(context.filter);
+            `, "x").exec(context.filter);
             if (match) {
                 if (!match.path) {
                     context.key = match.proto;
@@ -1156,15 +1217,7 @@ unlet s:cpo_save
     options: function initOptions(dactyl, modules, window) {
         const { completion, options } = modules;
 
-        var shell, shellcmdflag;
-        if (config.OS.isWindows) {
-            shell = "cmd.exe";
-            shellcmdflag = "/c";
-        }
-        else {
-            shell = services.environment.get("SHELL") || "sh";
-            shellcmdflag = "-c";
-        }
+        let { shell, shellcmdflag } = io;
 
         options.add(["banghist", "bh"],
             "Replace occurrences of ! with the previous command when executing external commands",

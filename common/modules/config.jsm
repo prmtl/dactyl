@@ -17,6 +17,7 @@ lazyRequire("cache", ["cache"]);
 lazyRequire("dom", ["DOM"]);
 lazyRequire("highlight", ["highlight"]);
 lazyRequire("messages", ["_"]);
+lazyRequire("overlay", ["overlay"]);
 lazyRequire("prefs", ["localPrefs", "prefs"]);
 lazyRequire("storage", ["storage", "File"]);
 lazyRequire("styles", ["Styles"]);
@@ -58,6 +59,33 @@ var ConfigBase = Class("ConfigBase", {
                 Protocol("dactyl", "{9c8f2530-51c8-4d41-b356-319e0b155c44}",
                          "resource://dactyl-content/")));
         });
+
+        if (this.VCSPath) {
+            this.branch = new Promise(resolve => {
+                this.timeout(() => {
+                    io.system(["hg", "-R", this.VCSPath, "branch"], "", true)
+                      .then(result => {
+                          resolve(result.output);
+                      });
+                }, 1000);
+            });
+
+            this._version = new Promise(resolve => {
+                this.timeout(() => {
+                    io.system(["hg", "-R", this.VCSPath, "log", "-r.",
+                                           "--template=hg{rev}-{branch}"], "", true)
+                      .then(result => {
+                          this.version = result.output;
+                          resolve(this.version);
+                      });
+                }, 1000);
+            });
+
+        }
+        else {
+            this.branch = Promise.resolve((/pre-hg\d+-(\S*)/.exec(this.version) || [])[1]);
+            this._version = null;
+        }
 
         this.protocolLoaded = true;
         this.timeout(function () {
@@ -116,9 +144,11 @@ var ConfigBase = Class("ConfigBase", {
                     if (isArray(value))
                         value = Set(value);
 
-                    this[prop] = update({}, this[prop],
-                                        iter([util.camelCase(k), value[k]]
-                                             for (k in value)).toObject());
+                    let overrides = {};
+                    for (let [key, val] of Object.entries(value))
+                        overrides[util.camelCase(key)] = val;
+
+                    this[prop] = update({}, this[prop], overrides);
                 }
                 else
                     this[prop] = value;
@@ -205,8 +235,19 @@ var ConfigBase = Class("ConfigBase", {
     get addonID() { return this.name + "@dactyl.googlecode.com"; },
 
     addon: Class.Memoize(function () {
-        return (JSMLoader.bootstrap || {}).addon ||
-                    AddonManager.getAddonByID(this.addonID);
+        return (JSMLoader.bootstrap || {}).addon;
+    }),
+
+    addonData: Class.Memoize(function () {
+        return (JSMLoader.bootstrap || {}).addonData;
+    }),
+
+    basePath: Class.Memoize(function () {
+        return (JSMLoader.bootstrap || {}).basePath;
+    }),
+
+    resourceURI: Class.Memoize(function () {
+        return this.addonData.resourceURI;
     }),
 
     get styleableChrome() { return Object.keys(this.overlays); },
@@ -234,20 +275,19 @@ var ConfigBase = Class("ConfigBase", {
 
         let uri = "resource://dactyl-locale/";
         let jar = io.isJarURL(uri);
+        let res;
         if (jar) {
             let prefix = getDir(jar.JAREntry);
-            var res = iter(s.slice(prefix.length).replace(/\/.*/, "")
-                           for (s of io.listJar(jar.JARFile, prefix)))
-                        .toArray();
+            res = Array.from(io.listJar(jar.JARFile, prefix),
+                             s => s.slice(prefix.length).replace(/\/.*/, ""));
         }
         else {
-            res = Ary(f.leafName
-                      // Fails on FF3: for (f of util.getFile(uri).iterDirectory())
-                      for (f of util.getFile(uri).readDirectory())
-                      if (f.isDirectory())).array;
+            res = Array.from(util.getFile(uri).readDirectory())
+                       .filter(f => f.isDirectory())
+                       .map(f => f.leafName);
         }
 
-        let exists = function exists(pkg) {
+        let exists = pkg => {
             return services["resource:"].hasSubstitution("dactyl-locale-" + pkg);
         };
 
@@ -264,9 +304,14 @@ var ConfigBase = Class("ConfigBase", {
      * @returns {string}
      */
     bestLocale: function (list) {
-        return values([this.appLocale, this.appLocale.replace(/-.*/, ""),
-                       "en", "en-US", list[0]])
-            .find(bind("has", new RealSet(list)));
+        let candidates =  [this.appLocale,
+                           this.appLocale.replace(/-.*/, ""),
+                           "en",
+                           "en-US",
+                           list[0]];
+
+        list = new RealSet(list);
+        return candidates.find(locale => list.has(locale));
     },
 
     /**
@@ -372,25 +417,16 @@ var ConfigBase = Class("ConfigBase", {
      *     proxy file.
      */
     VCSPath: Class.Memoize(function () {
-        if (/pre$/.test(this.addon.version)) {
-            let uri = util.newURI(this.addon.getResourceURI("").spec + "../.hg");
+        if (/pre$/.test(this.addonData.version)) {
+            // XXX: Sync.
+            let uri = util.newURI("../.hg", null, this.resourceURI);
+
             if (uri instanceof Ci.nsIFileURL &&
                     uri.file.exists() &&
                     io.pathSearch("hg"))
                 return uri.file.parent.path;
         }
         return null;
-    }),
-
-    /**
-     * @property {string} The name of the VCS branch that the application is
-     *     running from if using an extension proxy file or was built from if
-     *     installed as an XPI.
-     */
-    branch: Class.Memoize(function () {
-        if (this.VCSPath)
-            return io.system(["hg", "-R", this.VCSPath, "branch"]).output;
-        return (/pre-hg\d+-(\S*)/.exec(this.version) || [])[1];
     }),
 
     /** @property {string} The name of the current user profile. */
@@ -410,10 +446,6 @@ var ConfigBase = Class("ConfigBase", {
 
     /** @property {string} The Dactyl version string. */
     version: Class.Memoize(function () {
-        if (this.VCSPath)
-            return io.system(["hg", "-R", this.VCSPath, "log", "-r.",
-                              "--template=hg{rev}-{branch}"]).output;
-
         return this.addon.version;
     }),
 
@@ -428,10 +460,15 @@ var ConfigBase = Class("ConfigBase", {
     get fileExt() { return this.name.slice(0, -6); },
 
     dtd: Class.Memoize(function () {
-        return iter(this.dtdExtra,
-                    (["dactyl." + k, v] for ([k, v] of iter(config.dtdDactyl))),
-                    (["dactyl." + s, config[s]] for (s of config.dtdStrings)))
-                   .toObject();
+        return Ary.toObject([
+            ...Object.entries(this.dtdExtra),
+
+            ...Object.entries(config.dtdDactyl)
+                     .map(([k, v]) => ["dactyl." + k, v]),
+
+            ...config.dtdStrings
+                     .map(str => ["dactyl." + str, config[str]]),
+        ]);
      }),
 
     dtdDactyl: memoize({
@@ -504,7 +541,7 @@ var ConfigBase = Class("ConfigBase", {
                                             oncommand: "toggleSidebar(this.id || this.observes);" }]);
                 }
 
-                util.overlayWindow(window, { append: append });
+                overlay.overlayWindow(window, { append: append });
             },
 
             get window() { return window; },
@@ -632,14 +669,14 @@ config.INIT = update(Object.create(config.INIT), config.INIT, {
         let img = new window.Image;
         img.src = this.logo || "resource://dactyl-local-content/logo.png";
         img.onload = util.wrapCallback(function () {
-            highlight.loadCSS(literal(function () /*
+            highlight.loadCSS(`
                 !Logo  {
                      display:    inline-block;
-                     background: url({src});
-                     width:      {width}px;
-                     height:     {height}px;
+                     background: url(${img.src});
+                     width:      ${img.width}px;
+                     height:     ${img.height}px;
                 }
-            */$).replace(/\{(.*?)\}/g, (m, m1) => img[m1]));
+            `);
             img = null;
         });
     },
@@ -647,10 +684,13 @@ config.INIT = update(Object.create(config.INIT), config.INIT, {
     load: function load(dactyl, modules, window) {
         load.superapply(this, arguments);
 
-        this.timeout(function () {
-            if (this.branch && this.branch !== "default" &&
-                    modules.yes_i_know_i_should_not_report_errors_in_these_branches_thanks.indexOf(this.branch) === -1)
-                dactyl.warn(_("warn.notDefaultBranch", config.appName, this.branch));
+        this.timeout(() => {
+            let list = modules.yes_i_know_i_should_not_report_errors_in_these_branches_thanks;
+
+            this.branch.then(branch => {
+                if (branch && branch !== "default" && !list.includes(branch))
+                    dactyl.warn(_("warn.notDefaultBranch", config.appName, branch));
+            });
         }, 1000);
     }
 });

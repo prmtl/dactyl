@@ -97,9 +97,14 @@ var Modules = function Modules(window) {
         if (normal)
             return create(proto);
 
-        let sandbox = Components.utils.Sandbox(window, { sandboxPrototype: proto || modules,
-                                                         sandboxName: name || ("Dactyl Sandbox " + ++_id),
-                                                         wantXrays: true });
+        let sandbox = Components.utils.Sandbox(Cu.getObjectPrincipal(global),
+                                               { sandboxPrototype: proto || modules,
+                                                 sandboxName: name || ("Dactyl Sandbox " + ++_id),
+                                                 addonId: config.addon.id,
+                                                 wantXrays: true,
+                                                 metadata: { addonID: config.addon.id } });
+
+        loadPolyfill(sandbox);
 
         // Hack:
         // sandbox.Object = jsmodules.Object;
@@ -341,12 +346,12 @@ overlay.overlayWindow(Object.keys(config.overlays),
 
             let className = mod.className || mod.constructor.className;
 
-            if (!hasOwnProperty(init, className)) {
+            if (!hasOwnProp(init, className)) {
                 init[className] = function callee() {
                     function finish() {
                         this.currentDependency = className;
                         defineModule.time(className, name, INIT[name], mod,
-                                        modules.dactyl, modules, window);
+                                          modules.dactyl, modules, window);
                     }
                     if (!callee.frobbed) {
                         callee.frobbed = true;

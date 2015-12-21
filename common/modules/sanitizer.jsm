@@ -28,8 +28,13 @@ tmp.Sanitizer.prototype.__proto__ = Class.prototype;
 
 var Range = Struct("min", "max");
 update(Range.prototype, {
-    contains: function (date) date == null ||
-        (this.min == null || date >= this.min) && (this.max == null || date <= this.max),
+    contains: function (date) {
+        if (date != null)
+            return ((this.min == null || date >= this.min) &&
+                    (this.max == null || date <= this.max));
+
+        return false;
+    },
 
     get isEternity() {
         return this.max == null && this.min == null;
@@ -158,8 +163,9 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
                     return;
                 if (host) {
                     for (let p of Sanitizer.iterPermissions(host)) {
-                        services.permissions.remove(util.createURI(p.host), p.type);
-                        services.permissions.add(util.createURI(p.host), p.type, 0);
+                        let uri = util.createURI(p);
+                        services.permissions.remove(uri, p.type);
+                        services.permissions.add(uri, p.type, 0);
                     }
                     for (let p of iter(services.contentPrefs.getPrefs(util.createURI(host))))
                         services.contentPrefs.removePref(util.createURI(host), p.QueryInterface(Ci.nsIProperty).name);
@@ -180,10 +186,10 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
         });
 
         function ourItems(persistent) {
-            return [
-                item for (item of values(self.itemMap))
-                if (!item.builtin && (!persistent || item.persistent) && item.name !== "all")
-            ];
+            return Object.values(self.itemMap)
+                         .filter(item => (!item.builtin &&
+                                          (!persistent || item.persistent) &&
+                                          item.name !== "all"));
         }
 
         function prefOverlay(branch, persistent, local) {
@@ -255,13 +261,15 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
                             elem.setAttribute("rows", elem.itemCount);
                             win.Sanitizer = Class("Sanitizer", win.Sanitizer, {
                                 sanitize: function sanitize() {
-                                    self.withSavedValues(["sanitizing"], function () {
+                                    self.withSavedValues(["sanitizing"], () => {
                                         self.sanitizing = true;
                                         sanitize.superapply(this, arguments);
-                                        sanitizer.sanitizeItems([item.name for (item of values(self.itemMap))
-                                                                if (item.shouldSanitize(false))],
-                                                                Range.fromArray(this.range || []));
-                                    }, this);
+                                        sanitizer.sanitizeItems(
+                                            Object.values(self.itemMap)
+                                                  .filter(item => item.shouldSanitize(false))
+                                                  .map(item => item.name),
+                                            Range.fromArray(this.range || []));
+                                    });
                                 }
                             });
                         }
@@ -323,9 +331,12 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
      * @param {Window|Document|Node} thing The thing for which to return
      *      a load context.
      */
-    getContext: function getContext(thing) {
+    getContext: function getContext(thing, global = null) {
         if (!Ci.nsILoadContext)
             return null;
+
+        if (Cu.isCrossProcessWrapper(thing) && global)
+            thing = global;
 
         if (thing instanceof Ci.nsIDOMNode && thing.ownerDocument)
             thing = thing.ownerDocument;
@@ -563,7 +574,7 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
             }
             function setPerms(host, perm) {
                 let uri = util.createURI(host);
-                services.permissions.remove(uri.host, "cookie");
+                services.permissions.remove(uri, "cookie");
                 services.permissions.add(uri, "cookie", Sanitizer.PERMS[perm]);
             }
             commands.add(["cookies", "ck"],
@@ -592,13 +603,15 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
                             modules.commandline.commandOutput(template.tabular(
                                 ["Host", "Expiry (UTC)", "Path", "Name", "Value"],
                                 ["padding-right: 1em", "padding-right: 1em", "padding-right: 1em", "max-width: 12em; overflow: hidden;", "padding-left: 1ex;"],
-                                ([c.host,
-                                  c.isSession ? ["span", { highlight: "Enabled" }, "session"]
-                                              : (new Date(c.expiry * 1000).toJSON() || "Never").replace(/:\d\d\.000Z/, "").replace("T", " ").replace(/-/g, "/"),
-                                  c.path,
-                                  c.name,
-                                  c.value]
-                                  for (c of Sanitizer.iterCookies(host)))));
+                                Array.from(Sanitizer.iterCookies(host),
+                                           c => [
+                                    c.host,
+                                    c.isSession ? ["span", { highlight: "Enabled" }, "session"]
+                                                : (new Date(c.expiry * 1000).toJSON() || "Never").replace(/:\d\d\.000Z/, "").replace("T", " ").replace(/-/g, "/"),
+                                    c.path,
+                                    c.name,
+                                    c.value,
+                                  ])));
                             return;
                         default:
                             util.assert(cmd in Sanitizer.PERMS, _("error.invalidArgument"));
@@ -628,7 +641,7 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
     completion: function initCompletion(dactyl, modules, window) {
         modules.completion.visibleHosts = function completeHosts(context) {
             let res = util.visibleHosts(window.content);
-            if (context.filter && !res.some(host => host.contains(context.filter)))
+            if (context.filter && !res.some(host => host.includes(context.filter)))
                 res.push(context.filter);
 
             context.title = ["Domain"];
@@ -661,7 +674,7 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
 
                 validator: function (values) {
                     return values.length &&
-                           values.every(val => (val === "all" || hasOwnProperty(sanitizer.itemMap, val.replace(/^!/, ""))));
+                           values.every(val => (val === "all" || hasOwnProp(sanitizer.itemMap, val.replace(/^!/, ""))));
                 }
             });
 
@@ -671,17 +684,16 @@ var Sanitizer = Module("sanitizer", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakRef
             {
                 initialValue: true,
                 get values() {
-                    return [i
-                            for (i of values(sanitizer.itemMap))
-                            if (i.persistent || i.builtin)];
+                    return Object.values(sanitizer.itemMap)
+                                 .filter(i => i.persistent || i.builtin);
                 },
                 getter: function () {
                     if (!sanitizer.runAtShutdown)
                         return [];
                     else
-                        return [item.name
-                               for (item of values(sanitizer.itemMap))
-                               if (item.shouldSanitize(true))];
+                        return Object.values(sanitizer.itemMap)
+                                     .filter(item => item.shouldSanitize(true))
+                                     .map(item => item.name);
                 },
                 setter: function (value) {
                     if (value.length === 0)

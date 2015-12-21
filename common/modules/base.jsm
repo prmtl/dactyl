@@ -26,10 +26,12 @@ try {
 catch (e) {}
 
 let objproto = Object.prototype;
-let { __lookupGetter__, __lookupSetter__, __defineGetter__, __defineSetter__,
+var { __lookupGetter__, __lookupSetter__, __defineGetter__, __defineSetter__,
       hasOwnProperty, propertyIsEnumerable } = objproto;
 
-hasOwnProperty = Function.call.bind(hasOwnProperty);
+var hasOwnProp = Function.call.bind(hasOwnProperty);
+
+hasOwnProperty = hasOwnProp;
 propertyIsEnumerable = Function.call.bind(propertyIsEnumerable);
 
 function require(module_, target) {
@@ -43,7 +45,7 @@ function lazyRequire(module, names, target) {
         memoize(target || this, name, name => require(module)[name]);
 }
 
-let jsmodules = { lazyRequire: lazyRequire };
+var jsmodules = { lazyRequire: lazyRequire };
 jsmodules.jsmodules = jsmodules;
 
 function toString() {
@@ -62,10 +64,10 @@ function objToString(obj) {
     }
 }
 
-let use = {};
-let loaded = {};
-let currentModule;
-let global = this;
+var use = {};
+var loaded = {};
+var currentModule;
+var global = this;
 function defineModule(name, params, module) {
     if (!module)
         module = this;
@@ -184,7 +186,6 @@ defineModule("base", {
         "Set",
         "Struct",
         "StructBase",
-        "Symbol",
         "TextEncoder",
         "TextDecoder",
         "Timer",
@@ -203,6 +204,7 @@ defineModule("base", {
         "deprecated",
         "endModule",
         "hasOwnProperty",
+        "hasOwnProp",
         "identity",
         "isArray",
         "isGenerator",
@@ -214,6 +216,7 @@ defineModule("base", {
         "iterOwnProperties",
         "keys",
         "literal",
+        "loadPolyfill",
         "memoize",
         "module",
         "octal",
@@ -225,6 +228,12 @@ defineModule("base", {
     ]
 });
 
+function loadPolyfill(obj) {
+    JSMLoader.loadSubScript("resource://dactyl/polyfill.jsm",
+                            obj);
+}
+loadPolyfill(this);
+
 this.lazyRequire("cache", ["cache"]);
 this.lazyRequire("config", ["config"]);
 this.lazyRequire("messages", ["_", "Messages"]);
@@ -233,20 +242,16 @@ this.lazyRequire("services", ["services"]);
 this.lazyRequire("storage", ["File"]);
 this.lazyRequire("util", ["FailedAssertion", "util"]);
 
-if (typeof Symbol == "undefined")
-    this.Symbol = {
-        iterator: "@@iterator"
-    };
-
-literal.files = {};
-literal.locations = {};
-function literal(comment) {
+let literal_ = function literal(comment) {
     if (comment)
         return /^function.*?\/\*([^]*)\*\/(?:\/\* use strict \*\/)\s*\S$/.exec(comment)[1];
 
     let { caller } = Components.stack;
     while (caller && caller.language != 2)
         caller = caller.caller;
+
+    // Immediate caller is the `deprecate` helper.
+    caller = caller.caller;
 
     let file = caller.filename.replace(/.* -> /, "");
     let key = "literal:" + file + ":" + caller.lineNumber;
@@ -258,11 +263,21 @@ function literal(comment) {
                            ".*literal\\(/\\*([^]*?)\\*/\\)").exec(source);
         return match[1];
     });
-}
+};
+literal_.files = {};
+literal_.locations = {};
+
+// This needs to happen after `files` and `locations` have been defined
+// as properties of the real `literal` function.
+var literal = deprecated("template strings", literal_);
+literal.files = literal_.files;
+literal.locations = literal_.locations;
 
 function apply(obj, meth, args) {
     // The function's own apply method breaks in strange ways
     // when using CPOWs.
+    if (callable(meth))
+        return Function.apply.call(meth, obj, args);
     return Function.apply.call(obj[meth], obj, args);
 }
 
@@ -317,10 +332,16 @@ function* properties(obj, prototypes) {
                     return false;
                 };
 
-                return Ary.uniq([k for (k in obj)].concat(
-                    Object.getOwnPropertyNames(
-                              XPCNativeWrapper.unwrap(obj))
-                          .filter(filter)));
+                let keys_ = function* (obj) {
+                    for (let key in object)
+                        yield key;
+                };
+
+                return [...new RealSet(
+                    [...keys_(obj),
+                     ...Object.getOwnPropertyNames(Cu.waiveXrays(obj))
+                              .filter(filter)])
+                ];
             }
             else if (!e.stack) {
                 throw Error(e);
@@ -402,8 +423,11 @@ function keys(obj) {
     if (isinstance(obj, ["Map"]))
         return iter(obj.keys());
 
-    return iter(k for (k in obj)
-                if (hasOwnProperty(obj, k)));
+    return iter(function* () {
+        for (let k in obj)
+            if (hasOwnProp(obj, k))
+                yield k;
+    }());
 }
 
 /**
@@ -418,13 +442,16 @@ function values(obj) {
         return iter(obj.values());
 
     if (isinstance(obj, ["Generator", "Iterator", Iter]))
-        return iter(k for (k of obj));
+        return iter(obj);
 
     if (Symbol.iterator in obj)
         return iter(obj[Symbol.iterator]());
 
-    return iter(obj[k] for (k in obj)
-                if (hasOwnProperty(obj, k)));
+    return iter(function* () {
+        for (let k in obj)
+            if (hasOwnProp(obj, k))
+                yield obj[k];
+    }());
 }
 
 var RealSet = Set;
@@ -444,7 +471,7 @@ Object.defineProperty(RealSet.prototype, "difference", {
     configurable: true,
     writable: true,
     value: function RealSet_difference(set) {
-        return new RealSet(i for (i of this) if (!set.has(i)));
+        return new RealSet(Array.from(this).filter(i => !set.has(i)));
     }
 });
 
@@ -452,7 +479,7 @@ Object.defineProperty(RealSet.prototype, "intersection", {
     configurable: true,
     writable: true,
     value: function RealSet_intersection(set) {
-        return new RealSet(i for (i of this) if (set.has(i)));
+        return new RealSet(Array.from(this).filter(i => set.has(i)));
     }
 });
 
@@ -513,7 +540,7 @@ Set.has = deprecated("hasOwnProperty or Set#has",
         if (isinstance(set, ["Set"]))
             return set.has(key);
 
-        return hasOwnProperty(set, key) &&
+        return hasOwnProp(set, key) &&
                propertyIsEnumerable(set, key);
     }));
 /**
@@ -807,13 +834,17 @@ function memoize(obj, key, getter) {
 function update(target) {
     for (let i = 1; i < arguments.length; i++) {
         let src = arguments[i];
+
         Object.getOwnPropertyNames(src || {}).forEach(function (k) {
             let desc = Object.getOwnPropertyDescriptor(src, k);
             if (desc.value instanceof Class.Property)
                 desc = desc.value.init(k, target) || desc.value;
 
             try {
-                if (callable(desc.value) && target.__proto__) {
+                if (callable(desc.value) &&
+                        Cu.getClassName(desc.value, true) != "Proxy" &&
+                        Object.getPrototypeOf(target)) {
+
                     let func = desc.value.wrapped || desc.value;
                     if (!func.superapply) {
                         func.__defineGetter__("super", function get_super() {
@@ -836,7 +867,9 @@ function update(target) {
 
                 Object.defineProperty(target, k, desc);
             }
-            catch (e) {}
+            catch (e) {
+                dump("Hmm... " + e + "\n" + (e && e.stack || new Error().stack) + "\n");
+            }
         });
     }
     return target;
@@ -1183,34 +1216,19 @@ for (let name of properties(Class.prototype)) {
 }
 
 var closureHooks = {
-    get: function closure_get(target, prop) {
-        if (hasOwnProperty(target._closureCache, prop))
+    get(target, prop) {
+        if (prop in target._closureCache)
             return target._closureCache[prop];
 
         let p = target[prop];
         if (callable(p))
             return target._closureCache[prop] = p.bind(target);
         return p;
-    }
-
-    /*
-    getOwnPropertyNames: function getOwnPropertyNames(target) {
-        return [k for (k in properties(target, true))];
     },
-
-    getOwnPropertyDescriptor: function getOwnPropertyDescriptor(target, prop) {
-        let self = this;
-        return {
-            configurable: false,
-            writable: false,
-            get value() { return self.get(target, prop); }
-        }
-    }
-    */
 };
 
 Class.makeClosure = function makeClosure() {
-    this._closureCache = {};
+    this._closureCache = Object.create(null);
 
     return new Proxy(this, closureHooks);
 };
@@ -1347,7 +1365,9 @@ Module.INIT = {
             module.isLocalModule = true;
 
             modules.jsmodules[this.constructor.className] = module;
-            locals.reverse().forEach((fn, i) => { update(objs[i], fn.apply(module, args)); });
+            locals.reverse().forEach((fn, i) => {
+                update(objs[i], fn.apply(module, args));
+            });
 
             memoize(module, "closure", Class.makeClosure);
             module.instance = module;
@@ -1380,7 +1400,7 @@ function Struct(...args) {
 
     const Struct = Class(className || "Struct", StructBase, {
         length: args.length,
-        members: Ary(args).map((v, k) => [v, k]).toObject()
+        members: Ary.toObject(args.map((v, k) => [v, k])),
     });
     args.forEach(function (name, i) {
         Struct.prototype.__defineGetter__(name, function () {
@@ -1416,7 +1436,7 @@ var StructBase = Class("StructBase", Array, {
     },
 
     toObject: function struct_toObject() {
-        return iter.toObject([k, this[k]] for (k of keys(this.members)));
+        return Ary.toObject(Object.keys(this.members).map(k => [k, this[k]]));
     },
 
     toString: function struct_toString() {
@@ -1544,7 +1564,7 @@ function UTF8(str) {
     }
 }
 
-var octal = deprecated("octal integer literals", function octal(decimal) parseInt(decimal, 8));
+var octal = deprecated("octal integer literals", function octal(decimal) { return parseInt(decimal, 8); });
 
 /**
  * Iterates over an arbitrary object. The following iterator types are
@@ -1595,12 +1615,12 @@ function iter(obj, iface) {
     else if (Symbol.iterator in obj)
         res = obj[Symbol.iterator]();
     else if (isinstance(obj, [Ci.nsIDOMHTMLCollection, Ci.nsIDOMNodeList]))
-        res = Ary.iterItems(obj);
+        res = Array.from(obj).entries();
     else if (ctypes && ctypes.CData && obj instanceof ctypes.CData) {
         while (obj.constructor instanceof ctypes.PointerType)
             obj = obj.contents;
         if (obj.constructor instanceof ctypes.ArrayType)
-            res = Ary.iterItems(obj);
+            res = Array.from(obj).entries();
         else if (obj.constructor instanceof ctypes.StructType)
             res = (function* () {
                 for (let prop of obj.constructor.fields) {
@@ -1642,14 +1662,14 @@ function iter(obj, iface) {
     }
 
     if (res === undefined)
-        res = Iterator(obj)[Symbol.iterator]();
+        res = Object.entries(obj).values();
 
     return Iter(res);
 }
 update(iter, {
-    toArray: function toArray(iter) {
-        return Ary(iter).array;
-    },
+    toArray: deprecated("Array.from", function toArray(iter) {
+        return Array.from(iter);
+    }),
 
     // See Ary.prototype for API docs.
     toObject: function toObject(iter) {
@@ -1662,8 +1682,10 @@ update(iter, {
         return obj;
     },
 
-    compact: function compact(iter) {
-        return (item for (item of iter) if (item != null));
+    compact: function* compact(iter) {
+        for (let item of iter)
+            if (item != null)
+                yield item;
     },
 
     every: function every(iter, pred, self) {
@@ -1777,8 +1799,8 @@ update(iter, {
     }
 });
 
-const Iter = Class("Iter", {
-    init: function init(iter) {
+var Iter = Class("Iter", {
+    init(iter) {
         this.iter = iter;
         if (!(Symbol.iterator in iter) && "__iterator__" in iter)
             this.iter = iter.__iterator__();
@@ -1789,11 +1811,11 @@ const Iter = Class("Iter", {
             };
     },
 
-    next: function next() this.iter.next(),
+    next() { return this.iter.next() },
 
-    send: function send() apply(this.iter, "send", arguments),
+    send() { return apply(this.iter, "send", arguments) },
 
-    "@@iterator": function () this.iter,
+    "@@iterator": function () { return this.iter },
 
     __iterator__: function () {
         Cu.reportError(
@@ -1830,14 +1852,14 @@ function arrayWrap(fn) {
 var Ary = Class("Ary", Array, {
     init: function (ary) {
         if (Symbol.iterator in ary && !isArray(ary))
-            ary = [k for (k of ary)];
+            ary = Array.from(ary);
 
         return new Proxy(ary, {
             get: function array_get(target, prop) {
                 if (prop == "array")
                     return target;
 
-                if (hasOwnProperty(Ary, prop) && callable(Ary[prop]))
+                if (hasOwnProp(Ary, prop) && callable(Ary[prop]))
                     return arrayWrap(Ary[prop].bind(Ary, target));
 
                 let p = target[prop];
@@ -1882,7 +1904,7 @@ var Ary = Class("Ary", Array, {
      * @param {Array} ary
      * @returns {Array}
      */
-    compact: function compact(ary) ary.filter(item => item != null),
+    compact(ary) { return ary.filter(item => item != null) },
 
     /**
      * Returns true if each element of ary1 is equal to the
@@ -1892,8 +1914,10 @@ var Ary = Class("Ary", Array, {
      * @param {Array} ary2
      * @returns {boolean}
      */
-    equals: function (ary1, ary2)
-        ary1.length === ary2.length && Array.every(ary1, (e, i) => e === ary2[i]),
+    equals(ary1, ary2) {
+        return (ary1.length === ary2.length &&
+                Array.every(ary1, (e, i) => e === ary2[i]));
+    },
 
     /**
      * Flattens an array, such that all elements of the array are
@@ -1903,7 +1927,11 @@ var Ary = Class("Ary", Array, {
      * @param {Array} ary
      * @returns {Array}
      */
-    flatten: function flatten(ary) ary.length ? Array.prototype.concat.apply([], ary) : [],
+    flatten(ary) {
+        if (ary.length)
+            return [].concat(...ary);
+        return [];
+    },
 
     /**
      * Returns an Iterator for an array's values.
@@ -1911,10 +1939,10 @@ var Ary = Class("Ary", Array, {
      * @param {Array} ary
      * @returns {Iterator(Object)}
      */
-    iterValues: function* iterValues(ary) {
+    iterValues: deprecated("Array#values", function* iterValues(ary) {
         for (let i = 0; i < ary.length; i++)
             yield ary[i];
-    },
+    }),
 
     /**
      * Returns an Iterator for an array's indices and values.
@@ -1922,11 +1950,11 @@ var Ary = Class("Ary", Array, {
      * @param {Array} ary
      * @returns {Iterator([{number}, {Object}])}
      */
-    iterItems: function* iterItems(ary) {
+    iterItems: deprecated("Array#entries", function* iterItems(ary) {
         let length = ary.length;
         for (let i = 0; i < length; i++)
             yield [i, ary[i]];
-    },
+    }),
 
     /**
      * Returns the nth member of the given array that matches the
@@ -1980,11 +2008,10 @@ var Ary = Class("Ary", Array, {
     }
 });
 
-/* Make Minefield not explode, because Minefield exploding is not fun. */
 let iterProto = Iter.prototype;
 Object.keys(iter).forEach(function (k) {
     iterProto[k] = function (...args) {
-        let res = apply(iter, k, [this].concat(args));
+        let res = iter[k](this, ...args);
 
         if (k == "toArray")
             return res;
@@ -1999,7 +2026,7 @@ Object.keys(iter).forEach(function (k) {
 Object.keys(Ary).forEach(function (k) {
     if (!(k in iterProto))
         iterProto[k] = function (...args) {
-            let res = apply(Ary, k, [this.toArray()].concat(args));
+            let res = Ary[k]([...this], ...args);
 
             if (isArray(res))
                 return Ary(res);
@@ -2012,9 +2039,8 @@ Object.keys(Ary).forEach(function (k) {
 
 Object.getOwnPropertyNames(Array.prototype).forEach(function (k) {
     if (!(k in iterProto) && callable(Array.prototype[k]))
-        iterProto[k] = function () {
-            let ary = this.toArray();
-            let res = apply(ary, k, arguments);
+        iterProto[k] = function (...args) {
+            let res = [...this][k](...args);
 
             if (isArray(res))
                 return Ary(res);
@@ -2024,7 +2050,7 @@ Object.getOwnPropertyNames(Array.prototype).forEach(function (k) {
 });
 
 Object.defineProperty(Class.prototype, "closure",
-                      deprecated("bound", { get: function closure() this.bound }));
+                      deprecated("bound", { get: function closure() { return this.bound; } }));
 
 if (false)
     var array = Class("array", Ary, {

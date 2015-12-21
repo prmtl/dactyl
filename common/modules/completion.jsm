@@ -222,9 +222,13 @@ var CompletionContext = Class("CompletionContext", {
          * @function
          */
         this.getKey = function getKey(item, key) {
-            return (typeof self.keys[key] == "function") ? self.keys[key].call(this, item.item) :
-                key in self.keys ? item.item[self.keys[key]]
-                                 : item.item[key];
+            if (typeof self.keys[key] == "function")
+                return self.keys[key].call(this, item.item);
+
+            if (key in self.keys)
+                return item.item[self.keys[key]];
+
+            return item.item[key];
         };
         return this;
     },
@@ -280,17 +284,17 @@ var CompletionContext = Class("CompletionContext", {
                 get longestSubstring() { return self.longestAllSubstring; },
 
                 get items() {
-                    return Ary.flatten(self.activeContexts.map(function m(context) {
+                    return self.activeContexts.flatMap(context => {
                         let prefix = self.value.substring(minStart, context.offset);
 
-                        return context.items.map(function m(item) {
+                        return context.items.map(item => {
                             return {
                                 text: prefix + item.text,
                                 result: prefix + item.result,
                                 __proto__: item
                             };
                         });
-                    }));
+                    });
                 }
             });
 
@@ -319,24 +323,23 @@ var CompletionContext = Class("CompletionContext", {
          * Possibly.
          */
         let substrings = lists.reduce(
-            function r(res, list) {
-                return res.filter(function f(str) {
-                    return list.some(function s_(s) {
-                        return s.substr(0, str.length) == str;
-                    });
+            (res, list) => {
+                return res.filter(str => {
+                    return list.some(s => s.substr(0, str.length) == str);
                 });
             },
             lists.pop());
 
         if (!substrings) // FIXME: How is this undefined?
             return [];
+
         return Ary.uniq(Array.slice(substrings));
     },
     // Temporary
     get longestAllSubstring() {
         return this.allSubstrings.reduce(function r(a, b) {
-            return a.length > b.length ? a : b, "";
-        });
+            return a.length > b.length ? a : b;
+        }, "");
     },
 
     get caret() { return this._caret - this.offset; },
@@ -351,9 +354,11 @@ var CompletionContext = Class("CompletionContext", {
     set completions(items) {
         if (items && isArray(items.array))
             items = items.array;
+
         // Accept a generator
         if (!isArray(items))
-            items = [x for (x of iter(items || []))];
+            items = Array.from(items || []);
+
         if (this._completions !== items) {
             delete this.cache.filtered;
             delete this.cache.filter;
@@ -616,7 +621,7 @@ var CompletionContext = Class("CompletionContext", {
             var substrings = [text];
         }
         else {
-            var compare = function compare(text, s) { return text.contains(s); };
+            var compare = function compare(text, s) { return text.includes(s); };
             var substrings = [];
             let start = 0;
             let idx;
@@ -792,7 +797,7 @@ var CompletionContext = Class("CompletionContext", {
             let res = completer.apply(self || this, [context].concat(args));
 
             if (res && !isArray(res) && !isArray(res.__proto__))
-                res = [k for (k of res)];
+                res = Array.from(res);
 
             if (res)
                 context.completions = res;
@@ -1070,9 +1075,9 @@ var Completion = Module("completion", {
             context.fork("about", 6, this, function fork_(context) {
                 context.title = ["about:"];
                 context.generate = function generate_() {
-                    return [[k.substr(services.ABOUT.length), ""]
-                            for (k in Cc)
-                            if (k.startsWith(services.ABOUT))];
+                    return Object.keys(Cc).filter(k => k.startsWith(services.ABOUT))
+                                          .map(k => [k.substr(services.ABOUT.length),
+                                                     ""]);
                 };
             });
 
@@ -1148,10 +1153,11 @@ var Completion = Module("completion", {
                         running[provider] = null;
 
                     context.incomplete = result.searchResult >= result.RESULT_NOMATCH_ONGOING;
-                    context.completions = [
-                        { url: result.getValueAt(i), title: result.getCommentAt(i), icon: result.getImageAt(i) }
-                        for (i of util.range(0, result.matchCount))
-                    ];
+                    context.completions = Array.from(
+                        util.range(0, result.matchCount),
+                        i => ({ url: result.getValueAt(i),
+                                title: result.getCommentAt(i),
+                                icon: result.getImageAt(i) }));
                 }),
                 get onUpdateSearchResult() { return this.onSearchResult; }
             });
@@ -1165,7 +1171,7 @@ var Completion = Module("completion", {
         if (context.ignoreCase) {
             compare = util.compareIgnoreCase;
             contains = function contains_(a, b) {
-                return a && a.toLowerCase().contains(b.toLowerCase());
+                return a && a.toLowerCase().includes(b.toLowerCase());
             };
         }
 
@@ -1252,7 +1258,11 @@ var Completion = Module("completion", {
                 completer: function (context) {
                     let PREFIX = "/ex/contexts";
                     context.fork("ex", 0, completion, "ex");
-                    completion.contextList = [[k.substr(PREFIX.length), v.title[0]] for ([k, v] of iter(context.contexts)) if (k.substr(0, PREFIX.length) == PREFIX)];
+
+                    completion.contextList = (
+                        Object.entries(context.contexts)
+                              .filter(([k]) => k.substr(0, PREFIX.length) == PREFIX)
+                              .map(([k, v]) => [k.substr(PREFIX.length), v.title[0]]));
                 },
                 literal: 0
             });
@@ -1318,8 +1328,8 @@ var Completion = Module("completion", {
                 },
 
                 setter: function setter(values) {
-                    if (values.length == 1 && !hasOwnProperty(values[0], this.values)
-                            && Array.every(values[0], v => hasOwnProperty(this.valueMap, v)))
+                    if (values.length == 1 && !hasOwnProp(values[0], this.values)
+                            && Array.every(values[0], v => hasOwnProp(this.valueMap, v)))
                         return Array.map(values[0], v => this.valueMap[v]);
 
                     return values;

@@ -134,7 +134,8 @@ var Prefs = Module("prefs", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference])
         }
     },
 
-    getDefault: deprecated("Prefs#defaults.get", function getDefault(name, defaultValue) this.defaults.get(name, defaultValue)),
+    getDefault: deprecated("Prefs#defaults.get",
+                           function getDefault(name, defaultValue) { return this.defaults.get(name, defaultValue); }),
 
     /**
      * Returns an array of all preference names in this branch or the
@@ -410,7 +411,7 @@ var Prefs = Module("prefs", XPCOM([Ci.nsIObserver, Ci.nsISupportsWeakReference])
         function* prefs() {
             for (let pref of prefArray) {
                 let userValue = services.pref.prefHasUserValue(pref);
-                if (onlyNonDefault && !userValue || !pref.contains(filter))
+                if (onlyNonDefault && !userValue || !pref.includes(filter))
                     continue;
 
                 let value = this.get(pref);

@@ -23,12 +23,12 @@ var EventHive = Class("EventHive", Contexts.Hive, {
     },
 
     _events: function _events(event, callback) {
-        if (!isObject(event))
-            var [self, events] = [null, Ary.toObject([[event, callback]])];
+        if (isObject(event))
+            var [self, events] = [event, event[callback || "events"]];
         else
-            [self, events] = [event, event[callback || "events"]];
+            [self, events] = [null, { [event]: callback }];
 
-        if (hasOwnProperty(events, "input") && !hasOwnProperty(events, "dactyl-input"))
+        if (hasOwnProp(events, "input") && !hasOwnProp(events, "dactyl-input"))
             events["dactyl-input"] = events.input;
 
         return [self, events];
@@ -79,7 +79,7 @@ var EventHive = Class("EventHive", Contexts.Hive, {
             let elem = args[0].get();
             if (target == null || elem == target
                                && self == args[1].get()
-                               && hasOwnProperty(events, args[2])
+                               && hasOwnProp(events, args[2])
                                && args[3].wrapped == events[args[2]]
                                && args[4] == capture) {
 
@@ -98,6 +98,8 @@ var EventHive = Class("EventHive", Contexts.Hive, {
  */
 var Events = Module("events", {
     dbg: function () {},
+
+    debug: false,
 
     init: function () {
         this.keyEvents = [];
@@ -212,7 +214,7 @@ var Events = Module("events", {
     },
 
     get listen() { return this.builtin.bound.listen; },
-    addSessionListener: deprecated("events.listen", { get: function addSessionListener() this.listen }),
+    addSessionListener: deprecated("events.listen", { get: function addSessionListener() { return this.listen; } }),
 
     /**
      * Wraps an event listener to ensure that errors are reported.
@@ -306,9 +308,12 @@ var Events = Module("events", {
      * @param {string} filter A regular expression filter string. A null
      *     filter selects all macros.
      */
-    getMacros: function (filter) {
+    getMacros: function (filter = null) {
         let re = RegExp(filter || "");
-        return ([k, m.text] for ([k, m] of editor.registers) if (re.test(k)));
+
+        return Array.from(editor.registers,
+                          ([key, macro]) => [key, macro.text])
+                    .filter(([key]) => re.test(key));
     },
 
     /**
@@ -423,11 +428,11 @@ var Events = Module("events", {
         return true;
     },
 
-    canonicalKeys: deprecated("DOM.Event.canonicalKeys", { get: function canonicalKeys() DOM.Event.bound.canonicalKeys }),
-    create:        deprecated("DOM.Event", function create() DOM.Event.apply(null, arguments)),
-    dispatch:      deprecated("DOM.Event.dispatch", function dispatch() apply(DOM.Event, "dispatch", arguments)),
-    fromString:    deprecated("DOM.Event.parse", { get: function fromString() DOM.Event.bound.parse }),
-    iterKeys:      deprecated("DOM.Event.iterKeys", { get: function iterKeys() DOM.Event.bound.iterKeys }),
+    canonicalKeys: deprecated("DOM.Event.canonicalKeys", { get: function canonicalKeys() { return DOM.Event.bound.canonicalKeys; } }),
+    create:        deprecated("DOM.Event", function create() { return DOM.Event.apply(null, arguments); }),
+    dispatch:      deprecated("DOM.Event.dispatch", function dispatch() { return apply(DOM.Event, "dispatch", arguments); }),
+    fromString:    deprecated("DOM.Event.parse", { get: function fromString() { return DOM.Event.bound.parse; } }),
+    iterKeys:      deprecated("DOM.Event.iterKeys", { get: function iterKeys() { return DOM.Event.bound.iterKeys; } }),
 
     toString: function toString() {
         if (!arguments.length)
@@ -621,7 +626,8 @@ var Events = Module("events", {
 
             let win = (elem.ownerDocument || elem).defaultView || elem;
 
-            if (!(services.focus.getLastFocusMethod(win) & 0x3000)
+            if (!Cu.isCrossProcessWrapper(win) &&
+                !(services.focus.getLastFocusMethod(win) & 0x3000)
                 && events.isContentNode(elem)
                 && !buffer.focusAllowed(elem)
                 && isinstance(elem, [Ci.nsIDOMHTMLInputElement,
@@ -701,9 +707,11 @@ var Events = Module("events", {
                     return Events.kill(event);
                 }
 
-                if (this.processor)
-                    events.dbg("ON KEYPRESS " + key + " processor: " + this.processor,
-                               event.originalTarget instanceof Element ? event.originalTarget : String(event.originalTarget));
+                if (this.processor) {
+                    if (events.debug)
+                        events.dbg("ON KEYPRESS " + key + " processor: " + this.processor,
+                                   event.originalTarget instanceof Element ? event.originalTarget : String(event.originalTarget));
+                }
                 else {
                     let mode = modes.getStack(0);
                     if (event.dactylMode)
@@ -728,9 +736,11 @@ var Events = Module("events", {
                     else if (!event.isMacro && !event.noremap && events.shouldPass(event))
                         ignore = true;
 
-                    events.dbg("\n\n");
-                    events.dbg("ON KEYPRESS " + key + " ignore: " + ignore,
-                               event.originalTarget instanceof Element ? event.originalTarget : String(event.originalTarget));
+                    if (events.debug) {
+                        events.dbg("\n\n");
+                        events.dbg("ON KEYPRESS " + key + " ignore: " + ignore,
+                                   event.originalTarget instanceof Element ? event.originalTarget : String(event.originalTarget));
+                    }
 
                     if (ignore)
                         return null;
@@ -780,27 +790,50 @@ var Events = Module("events", {
 
             let key = DOM.Event.stringify(event);
 
-            let pass = this.passing && !event.isMacro ||
-                    DOM.Event.feedingEvent && DOM.Event.feedingEvent.isReplay ||
-                    event.isReplay ||
-                    modes.main == modes.PASS_THROUGH ||
-                    modes.main == modes.QUOTE
-                        && modes.getStack(1).main !== modes.PASS_THROUGH
-                        && !this.shouldPass(event) ||
-                    !modes.passThrough && this.shouldPass(event) ||
-                    !this.processor && event.type === "keydown"
-                        && options.get("passunknown").getKey(modes.main.allBases)
-                        && !(modes.main.count && /^\d$/.test(key) ||
-                             modes.main.allBases.some(
-                               mode => mappings.hives
-                                               .some(hive => hive.get(mode, key)
-                                                          || hive.getCandidates(mode, key))));
+            let hasCandidates = mode => {
+                return mappings.hives.some(hive => (hive.get(mode, key, true) ||
+                                                    hive.getCandidates(mode, key, true)));
+            };
 
-            events.dbg("ON " + event.type.toUpperCase() + " " + key +
-                       " passing: " + this.passing + " " +
-                       " pass: " + pass +
-                       " replay: " + event.isReplay +
-                       " macro: " + event.isMacro);
+            let pass = (() => {
+                if (this.passing && !event.isMacro)
+                    return true;
+
+                if (DOM.Event.feedingEvent && DOM.Event.feedingEvent.isReplay)
+                    return true;
+
+                if (event.isReplay)
+                    return true;
+
+                if (modes.main == modes.PASS_THROUGH)
+                    return true;
+
+                if (modes.main == modes.QUOTE &&
+                        modes.getStack(1).main !== modes.PASS_THROUGH &&
+                        !this.shouldPass(event))
+                    return true;
+
+                if (!modes.passThrough && this.shouldPass(event))
+                    return true;
+
+                if (!this.processor && event.type === "keydown" &&
+                        options.get("passunknown").getKey(modes.main.allBases)) {
+                    if (!(modes.main.count && /^\d$/.test(key)))
+                        return true;
+
+                    if (modes.main.allBases.some(hasCandidates))
+                        return true;
+                }
+
+                return false;
+            })();
+
+            if (events.debug)
+                events.dbg("ON " + event.type.toUpperCase() + " " + key +
+                           " passing: " + this.passing + " " +
+                           " pass: " + pass +
+                           " replay: " + event.isReplay +
+                           " macro: " + event.isMacro);
 
             if (event.type === "keydown")
                 this.passing = pass;
@@ -808,7 +841,7 @@ var Events = Module("events", {
             // Prevents certain sites from transferring focus to an input box
             // before we get a chance to process our key bindings on the
             // "keypress" event.
-            if (!pass)
+            if (!pass && Cu.getClassName(event, true) !== "Proxy")
                 event.stopPropagation();
         },
         keydown: function onKeyDown(event) {
@@ -1025,7 +1058,7 @@ var Events = Module("events", {
     completion: function initCompletion() {
         completion.macro = function macro(context) {
             context.title = ["Macro", "Keys"];
-            context.completions = [item for (item of events.getMacros())];
+            context.completions = Array.from(events.getMacros());
         };
     },
     mappings: function initMappings() {
@@ -1140,7 +1173,7 @@ var Events = Module("events", {
                         return this.value.filter(f => f(buffer.documentURI));
                     });
                     memoize(this, "pass", function () {
-                        return new RealSet(Ary.flatten(this.filters.map(f => f.keys)));
+                        return new RealSet(this.filters.flatMap(f => f.keys));
                     });
                     memoize(this, "commandHive", function hive() {
                         return Hive(this.filters, "command");
@@ -1152,7 +1185,7 @@ var Events = Module("events", {
 
                 has: function (key) {
                     return this.pass.has(key) ||
-                           hasOwnProperty(this.commandHive.stack.mappings, key);
+                           hasOwnProp(this.commandHive.stack.mappings, key);
                 },
 
                 get pass() { this.flush(); return this.pass; },

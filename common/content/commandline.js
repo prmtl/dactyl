@@ -317,8 +317,11 @@ var CommandWidgets = Class("CommandWidgets", {
         return document.getElementById("dactyl-contextmenu");
     }),
 
+    multilineOutputReady: false,
+
     multilineOutput: Class.Memoize(function () {
         return this._whenReady("dactyl-multiline-output", elem => {
+            this.multilineOutputReady = true;
             highlight.highlightNode(elem.contentDocument.body, "MOW");
         });
     }, true),
@@ -525,7 +528,8 @@ var CommandLine = Module("commandline", {
             if (storage.exists("history-" + name)) {
                 let ary = storage.newArray("history-" + name, { store: true, privateData: true });
 
-                this._store.set(name, [v for ([k, v] of ary)]);
+                this._store.set(name, Array.from(ary, ([key, val]) => val));
+
                 ary.delete();
                 this._store.changed();
             }
@@ -975,7 +979,7 @@ var CommandLine = Module("commandline", {
         }
     },
 
-    updateOutputHeight: deprecated("mow.resize", function updateOutputHeight(open, extra) mow.resize(open, extra)),
+    updateOutputHeight: deprecated("mow.resize", function updateOutputHeight(open, extra) { return mow.resize(open, extra); }),
 
     withOutputToString: function withOutputToString(fn, self, ...args) {
         dactyl.registerObserver("echoLine", observe, true);

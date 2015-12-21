@@ -39,7 +39,7 @@ var Map = Class("Map", {
         Object.freeze(this.modes);
 
         if (info) {
-            if (hasOwnProperty(Map.types, info.type))
+            if (hasOwnProp(Map.types, info.type))
                 this.update(Map.types[info.type]);
             this.update(info);
         }
@@ -84,6 +84,8 @@ var Map = Class("Map", {
     /** @property {boolean} Whether the RHS of the mapping should expand mappings recursively. */
     noremap: false,
 
+    passThrough: false,
+
     /** @property {function(object)} A function to be executed before this mapping. */
     preExecute: function preExecute(args) {},
     /** @property {function(object)} A function to be executed after this mapping. */
@@ -116,7 +118,7 @@ var Map = Class("Map", {
         return this.keys.indexOf(name) >= 0;
     },
 
-    get keys() { return Ary.flatten(this.names.map(mappings.bound.expand)); },
+    get keys() { return this.names.flatMap(mappings.bound.expand); },
 
     /**
      * Execute the action for this mapping.
@@ -171,7 +173,9 @@ var Map = Class("Map", {
 var MapHive = Class("MapHive", Contexts.Hive, {
     init: function init(group) {
         init.supercall(this, group);
-        this.stacks = {};
+
+        // Name clashes. Ugh.
+        this.stacks = new jsmodules.Map();
     },
 
     /**
@@ -222,9 +226,12 @@ var MapHive = Class("MapHive", Contexts.Hive, {
      * @returns {[Map]}
      */
     getStack: function getStack(mode) {
-        if (!(mode in this.stacks))
-            return this.stacks[mode] = MapHive.Stack();
-        return this.stacks[mode];
+        if (!this.stacks.has(mode.id)) {
+            let stack = MapHive.Stack();
+            this.stacks.set(mode.id, stack);
+            return stack;
+        }
+        return this.stacks.get(mode.id);
     },
 
     /**
@@ -232,10 +239,15 @@ var MapHive = Class("MapHive", Contexts.Hive, {
      *
      * @param {Modes.Mode} mode The mode to search.
      * @param {string} cmd The map name to match.
+     * @param {boolean} skipPassThrough Ignore pass-through mappings.
      * @returns {Map|null}
      */
-    get: function (mode, cmd) {
-        return this.getStack(mode).mappings[cmd];
+    get: function (mode, cmd, skipPassThrough = false) {
+        let map = this.getStack(mode).mappings[cmd];
+
+        if (skipPassThrough && map && !map.passThrough)
+            return null;
+        return map;
     },
 
     /**
@@ -244,9 +256,12 @@ var MapHive = Class("MapHive", Contexts.Hive, {
      *
      * @param {Modes.Mode} mode The mode to search.
      * @param {string} prefix The map prefix string to match.
+     * @param {boolean} skipPassThrough Ignore pass-through mappings.
      * @returns {number)
      */
-    getCandidates: function (mode, prefix) {
+    getCandidates: function (mode, prefix, skipPassThrough = false) {
+        if (skipPassThrough)
+            return this.getStack(mode).hardCandidates[prefix] || 0;
         return this.getStack(mode).candidates[prefix] || 0;
     },
 
@@ -276,8 +291,8 @@ var MapHive = Class("MapHive", Contexts.Hive, {
                 delete stack.states;
                 map.names.splice(j, 1);
                 if (map.names.length == 0) // FIX ME.
-                    for (let [mode, stack] of iter(this.stacks))
-                        this.stacks[mode] = MapHive.Stack(stack.filter(m => m != map));
+                    for (let [mode, stack] of this.stacks)
+                        this.stacks.set(mode.id, MapHive.Stack(stack.filter(m => m != map)));
                 return;
             }
         }
@@ -289,14 +304,13 @@ var MapHive = Class("MapHive", Contexts.Hive, {
      * @param {Modes.Mode} mode The mode to remove all mappings from.
      */
     clear: function (mode) {
-        this.stacks[mode] = MapHive.Stack([]);
+        this.stacks.set(mode.id, MapHive.Stack());
     }
 }, {
     Stack: Class("Stack", Array, {
         init: function (ary) {
-            let self = ary || [];
-            self.__proto__ = this.__proto__;
-            return self;
+            if (ary)
+                this.push(...ary);
         },
 
         "@@iterator": function () {
@@ -304,6 +318,7 @@ var MapHive = Class("MapHive", Contexts.Hive, {
         },
 
         get candidates() { return this.states.candidates; },
+        get hardCandidates() { return this.states.hardCandidates; },
         get mappings() { return this.states.mappings; },
 
         add: function (map) {
@@ -312,8 +327,9 @@ var MapHive = Class("MapHive", Contexts.Hive, {
         },
 
         states: Class.Memoize(function () {
-            var states = {
+            let states = {
                 candidates: {},
+                hardCandidates: {},
                 mappings: {}
             };
 
@@ -323,8 +339,11 @@ var MapHive = Class("MapHive", Contexts.Hive, {
                     let state = "";
                     for (let key of DOM.Event.iterKeys(name)) {
                         state += key;
-                        if (state !== name)
+                        if (state !== name) {
                             states.candidates[state] = (states.candidates[state] || 0) + 1;
+                            if (!map.passThrough)
+                                states.hardCandidates[state] = (states.hardCandidates[state] || 0) + 1;
+                        }
                     }
                 }
             return states;
@@ -370,7 +389,7 @@ var Mappings = Module("mappings", {
 
     get userHives() { return this.allHives.filter(h => h !== this.builtin); },
 
-    expandLeader: deprecated("your brain", function expandLeader(keyString) keyString),
+    expandLeader: deprecated("your brain", function expandLeader(keyString) { return keyString; }),
 
     prefixes: Class.Memoize(function () {
         let list = Array.map("CASM", s => s + "-");
@@ -404,7 +423,7 @@ var Mappings = Module("mappings", {
     iterate: function* (mode) {
         let seen = new RealSet;
         for (let hive of this.hives.iterValues())
-            for (let map of Ary.iterValues(hive.getStack(mode)))
+            for (let map of hive.getStack(mode))
                 if (!seen.add(map.name))
                     yield map;
     },
@@ -415,11 +434,11 @@ var Mappings = Module("mappings", {
         return this.iterate(modes.NORMAL);
     },
 
-    getDefault: deprecated("mappings.builtin.get", function getDefault(mode, cmd) this.builtin.get(mode, cmd)),
-    getUserIterator: deprecated("mappings.user.iterator", function getUserIterator(modes) this.user.iterator(modes)),
-    hasMap: deprecated("group.mappings.has", function hasMap(mode, cmd) this.user.has(mode, cmd)),
-    remove: deprecated("group.mappings.remove", function remove(mode, cmd) this.user.remove(mode, cmd)),
-    removeAll: deprecated("group.mappings.clear", function removeAll(mode) this.user.clear(mode)),
+    getDefault: deprecated("mappings.builtin.get", function getDefault(mode, cmd) { return this.builtin.get(mode, cmd); }),
+    getUserIterator: deprecated("mappings.user.iterator", function getUserIterator(modes) { return this.user.iterator(modes); }),
+    hasMap: deprecated("group.mappings.has", function hasMap(mode, cmd) { return this.user.has(mode, cmd); }),
+    remove: deprecated("group.mappings.remove", function remove(mode, cmd) { return this.user.remove(mode, cmd); }),
+    removeAll: deprecated("group.mappings.clear", function removeAll(mode) { return this.user.clear(mode); }),
 
     /**
      * Adds a new default key mapping.
@@ -646,31 +665,29 @@ var Mappings = Module("mappings", {
                     if (this.name != "map")
                         return [];
                     else
-                        return Ary(mappings.userHives)
+                        return mappings.userHives
                             .filter(h => h.persist)
-                            .map(hive => [
-                                {
-                                    command: "map",
-                                    options: {
-                                        "-count": map.count ? null : undefined,
-                                        "-description": map.description,
-                                        "-group": hive.name == "user" ? undefined : hive.name,
-                                        "-modes": uniqueModes(map.modes),
-                                        "-silent": map.silent ? null : undefined
-                                    },
-                                    arguments: [map.names[0]],
-                                    literalArg: map.rhs,
-                                    ignoreDefaults: true
-                                }
-                                for (map of userMappings(hive))
-                                if (map.persist)
-                            ])
-                            .flatten().array;
+                            .flatMap(hive =>
+                                Array.from(userMappings(hive))
+                                     .filter(map => map.persist)
+                                     .map(map => ({
+                                         command: "map",
+                                         options: {
+                                             "-count": map.count ? null : undefined,
+                                             "-description": map.description,
+                                             "-group": hive.name == "user" ? undefined : hive.name,
+                                             "-modes": uniqueModes(map.modes),
+                                             "-silent": map.silent ? null : undefined
+                                         },
+                                         arguments: [map.names[0]],
+                                         literalArg: map.rhs,
+                                         ignoreDefaults: true
+                                     })));
                 }
             };
             function* userMappings(hive) {
                 let seen = new RealSet;
-                for (let stack of values(hive.stacks))
+                for (let stack of hive.stacks.values())
                     for (let map of Ary.iterValues(stack))
                         if (!seen.add(map.id))
                             yield map;
@@ -731,9 +748,11 @@ var Mappings = Module("mappings", {
                 return Array.concat(value).every(findMode);
             },
             completer: function () {
-                return [[Ary.compact([mode.name.toLowerCase().replace(/_/g, "-"), mode.char]), mode.description]
-                        for (mode of modes.all)
-                        if (!mode.hidden)];
+                return modes.all.filter(mode => !mode.hidden)
+                            .map(
+                    mode => [Ary.compact([mode.name.toLowerCase().replace(/_/g, "-"),
+                                          mode.char]),
+                             mode.description]);
             }
         };
 
@@ -746,12 +765,15 @@ var Mappings = Module("mappings", {
             return null;
         }
         function uniqueModes(modes) {
-            let chars = [k for ([k, v] of iter(modules.modes.modeChars))
-                         if (v.every(mode => modes.indexOf(mode) >= 0))];
+            let chars = (
+                Object.entries(modules.modes.modeChars)
+                      .filter(([char, modes_]) => modes_.every(m => modes.includes(m)))
+                      .map(([char]) => char));
 
-            return Ary.uniq(modes.filter(m => chars.indexOf(m.char) < 0)
-                                 .map(m => m.name.toLowerCase())
-                                 .concat(chars));
+            let names = modes.filter(m => !chars.includes(m.char))
+                             .map(m => m.name.toLowerCase());
+
+            return [...new RealSet([...chars, ...names])];
         }
 
         commands.add(["feedkeys", "fk"],
@@ -773,7 +795,8 @@ var Mappings = Module("mappings", {
         for (let mode of modes.mainModes)
             if (mode.char && !commands.get(mode.char + "map", true))
                 addMapCommands(mode.char,
-                               [m.mask for (m of modes.mainModes) if (m.char == mode.char)],
+                               modes.mainModes.filter(m => m.char == mode.char)
+                                              .map(m => m.mask),
                                mode.displayName);
 
         let args = {
@@ -839,11 +862,13 @@ var Mappings = Module("mappings", {
                     iterateIndex: function (args) {
                         let self = this;
                         let prefix = /^[bCmn]$/.test(mode.char) ? "" : mode.char + "_";
-                        let haveTag = k => hasOwnProperty(help.tags, k);
+                        let haveTag = k => hasOwnProp(help.tags, k);
 
-                        return ({ helpTag: prefix + map.name, __proto__: map }
-                                for (map of self.iterate(args, true))
-                                if (map.hive === mappings.builtin || haveTag(prefix + map.name)));
+                        return Array.from(self.iterate(args, true))
+                                    .filter(map => (map.hive === mappings.builtin ||
+                                                    haveTag(prefix + map.name)))
+                                    .map(map => ({ helpTag: prefix + map.name,
+                                                   __proto__: map }));
                     },
                     description: "List all " + mode.displayName + " mode mappings along with their short descriptions",
                     index: mode.char + "-map",
@@ -870,8 +895,8 @@ var Mappings = Module("mappings", {
             [
                 null,
                 function (context, obj, args) {
-                    return [[m.names, m.description]
-                            for (m of this.iterate(args[0]))];
+                    return Array.from(this.iterate(args[0]),
+                                      map => [map.names, map.description]);
                 }
             ]);
     },

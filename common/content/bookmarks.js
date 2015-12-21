@@ -77,7 +77,7 @@ var Bookmarks = Module("bookmarks", {
         if (id != null)
             var bmark = bookmarkcache.bookmarks[id];
         else if (!force) {
-            if (keyword && hasOwnProperty(bookmarkcache.keywords, keyword))
+            if (keyword && hasOwnProp(bookmarkcache.keywords, keyword))
                 bmark = bookmarkcache.keywords[keyword];
             else if (bookmarkcache.isBookmarked(uri))
                 for (bmark of bookmarkcache)
@@ -178,7 +178,7 @@ var Bookmarks = Module("bookmarks", {
         }
     },
 
-    isBookmarked: deprecated("bookmarkcache.isBookmarked", { get: function isBookmarked() bookmarkcache.bound.isBookmarked }),
+    isBookmarked: deprecated("bookmarkcache.isBookmarked", { get: function isBookmarked() { return bookmarkcache.bound.isBookmarked; } }),
 
     /**
      * Remove a bookmark or bookmarks. If *ids* is an array, removes the
@@ -213,7 +213,7 @@ var Bookmarks = Module("bookmarks", {
         }
     },
 
-    getSearchEngines: deprecated("bookmarks.searchEngines", function getSearchEngines() this.searchEngines),
+    getSearchEngines: deprecated("bookmarks.searchEngines", function getSearchEngines() { return this.searchEngines; }),
     /**
      * Returns a list of all visible search engines in the search
      * services, augmented with keyword, title, and icon properties for
@@ -228,7 +228,7 @@ var Bookmarks = Module("bookmarks", {
             if (!alias)
                 alias = "search"; // for search engines which we can't find a suitable alias
 
-            if (hasOwnProperty(aliases, alias))
+            if (hasOwnProp(aliases, alias))
                 alias += ++aliases[alias];
             else
                 aliases[alias] = 0;
@@ -252,10 +252,10 @@ var Bookmarks = Module("bookmarks", {
     hasSuggestions: function hasSuggestions(engineName, query, callback) {
         const responseType = "application/x-suggestions+json";
 
-        if (hasOwnProperty(this.suggestionProviders, engineName))
+        if (hasOwnProp(this.suggestionProviders, engineName))
             return true;
 
-        let engine = hasOwnProperty(this.searchEngines, engineName) && this.searchEngines[engineName];
+        let engine = hasOwnProp(this.searchEngines, engineName) && this.searchEngines[engineName];
         if (engine && engine.supportsResponseType(responseType))
             return true;
 
@@ -281,10 +281,10 @@ var Bookmarks = Module("bookmarks", {
     getSuggestions: function getSuggestions(engineName, query, callback) {
         const responseType = "application/x-suggestions+json";
 
-        if (hasOwnProperty(this.suggestionProviders, engineName))
+        if (hasOwnProp(this.suggestionProviders, engineName))
             return this.suggestionProviders[engineName](query, callback);
 
-        let engine = hasOwnProperty(this.searchEngines, engineName) && this.searchEngines[engineName];
+        let engine = hasOwnProp(this.searchEngines, engineName) && this.searchEngines[engineName];
         if (engine && engine.supportsResponseType(responseType))
             var queryURI = engine.getSubmission(query, responseType).uri.spec;
 
@@ -347,7 +347,7 @@ var Bookmarks = Module("bookmarks", {
         let [keyword, param] = util.split(query, " ", 2);
         param = param || "";
 
-        var engine = hasOwnProperty(bookmarks.searchEngines, keyword) && bookmarks.searchEngines[keyword];
+        var engine = hasOwnProp(bookmarks.searchEngines, keyword) && bookmarks.searchEngines[keyword];
         if (engine) {
             if (engine.searchForm && !param)
                 return engine.searchForm;
@@ -436,10 +436,9 @@ var Bookmarks = Module("bookmarks", {
             names: ["-tags", "-T"],
             description: "A comma-separated list of tags",
             completer: function tags(context) {
-                context.generate = () => Ary(b.tags
-                                             for (b of bookmarkcache)
-                                             if (b.tags))
-                                            .flatten().uniq().array;
+                context.generate = () => new RealSet(Array.from(bookmarkcache)
+                                                          .flatMap(b.tags));
+
                 context.keys = { text: identity, description: identity };
             },
             type: CommandOption.LIST
@@ -450,13 +449,17 @@ var Bookmarks = Module("bookmarks", {
             description: "Bookmark page title or description",
             completer: function title(context, args) {
                 let frames = buffer.allFrames();
+
                 if (!args.bang)
-                    return [
-                        [win.document.title, frames.length == 1 ? /*L*/"Current Location" : /*L*/"Frame: " + win.location.href]
-                        for (win of frames)];
+                    return frames.map(win => [win.document.title,
+                                              frames.length == 1 ? /*L*/"Current Location"
+                                                                 : /*L*/"Frame: " + win.location.href]);
+
                 context.keys.text = "title";
                 context.keys.description = "url";
-                return bookmarks.get(args.join(" "), args["-tags"], null, { keyword: args["-keyword"], title: context.filter });
+                return bookmarks.get(args.join(" "), args["-tags"], null,
+                                     { keyword: args["-keyword"],
+                                       title: context.filter });
             },
             type: CommandOption.STRING
         };
@@ -515,12 +518,14 @@ var Bookmarks = Module("bookmarks", {
                     if (!args.bang) {
                         context.title = ["Page URL"];
                         let frames = buffer.allFrames();
-                        context.completions = [
-                            [win.document.documentURI, frames.length == 1 ? /*L*/"Current Location" : /*L*/"Frame: " + win.document.title]
-                            for (win of frames)];
+                        context.completions = frames.map(win => [win.document.documentURI,
+                                                                 frames.length == 1 ? /*L*/"Current Location"
+                                                                                    : /*L*/"Frame: " + win.document.title]);
                     }
                     else
-                        completion.bookmark(context, args["-tags"], { keyword: args["-keyword"], title: args["-title"] });
+                        completion.bookmark(context, args["-tags"],
+                                            { keyword: args["-keyword"],
+                                              title: args["-title"] });
                 },
                 options: [keyword, title, tags, post,
                     {
@@ -696,7 +701,7 @@ var Bookmarks = Module("bookmarks", {
                          keyword, true);
 
             let item = keywords[keyword];
-            if (item && item.url.contains("%s"))
+            if (item && item.url.includes("%s"))
                 context.fork("keyword/" + keyword, keyword.length + space.length, null, context => {
                     context.format = history.format;
                     context.title = [/*L*/keyword + " Quick Search"];
@@ -709,7 +714,7 @@ var Bookmarks = Module("bookmarks", {
                         return history.get({ uri: util.newURI(begin), uriIsPrefix: true }).map(function (item) {
                             let rest = item.url.length - end.length;
                             let query = item.url.substring(begin.length, rest);
-                            if (item.url.substr(rest) == end && query.contains("&"))
+                            if (item.url.substr(rest) == end && query.includes("&"))
                                 try {
                                     item.url = decodeURIComponent(query.replace(/[&#].*/, "").replace(/\+/g, " "));
                                     if (!seen.add(item.url))
@@ -765,7 +770,7 @@ var Bookmarks = Module("bookmarks", {
                     return;
 
                 let words = ctxt.filter.toLowerCase().split(/\s+/g);
-                ctxt.completions = ctxt.completions.filter(i => words.every(w => i.toLowerCase().contains(w)));
+                ctxt.completions = ctxt.completions.filter(i => words.every(w => i.toLowerCase().includes(w)));
 
                 ctxt.hasItems = ctxt.completions.length;
                 ctxt.incomplete = true;

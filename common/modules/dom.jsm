@@ -671,9 +671,13 @@ var DOM = Class("DOM", {
                              ["span", { highlight: "HtmlTagEnd" }, "<", namespaced(elem), ">"]]
                     ]);
                 else {
-                    let tag = "<" + [namespaced(elem)].concat(
-                        [namespaced(a) + '="' + String.replace(a.value, /["<]/, DOM.escapeHTML) + '"'
-                     for (a of elem.attributes)]).join(" ");
+                    let escape = val => val.replace(/["<]/g, DOM.escapeHTML);
+
+                    let tag = "<" + [
+                        namespaced(elem),
+                        ...Array.from(elem.attributes,
+                                      attr => `${namespaced(attr)}="${escape(attr.value)}"`),
+                    ].join(" ");
 
                     res.push(tag + (!hasChildren ? "/>" : ">...</" + namespaced(elem) + ">"));
                 }
@@ -702,7 +706,7 @@ var DOM = Class("DOM", {
                     if (callable(v))
                         v = v.call(this, elem, i);
 
-                    if (hasOwnProperty(hooks, k) && hooks[k].set)
+                    if (hasOwnProp(hooks, k) && hooks[k].set)
                         hooks[k].set.call(this, elem, v, k);
                     else if (v == null)
                         elem.removeAttributeNS(ns, k);
@@ -714,7 +718,7 @@ var DOM = Class("DOM", {
         if (!this.length)
             return null;
 
-        if (hasOwnProperty(hooks, key) && hooks[key].get)
+        if (hasOwnProp(hooks, key) && hooks[key].get)
             return hooks[key].get.call(this, this[0], key);
 
         if (!this[0].hasAttributeNS(ns, key))
@@ -723,17 +727,17 @@ var DOM = Class("DOM", {
         return this[0].getAttributeNS(ns, key);
     },
 
-    css: update(function css(key, val) {
+    css: update(function css(props, val = undefined) {
         if (val !== undefined)
-            key = Ary.toObject([[key, val]]);
+            props = { [props]: val };
 
-        if (isObject(key))
-            return this.each(function (elem) {
-                for (let [k, v] of iter(key))
+        if (isObject(props))
+            return this.each(elem => {
+                for (let [k, v] of Object.entries(props))
                     elem.style[css.property(k)] = v;
             });
 
-        return this[0].style[css.property(key)];
+        return this[0].style[css.property(props)];
     }, {
         name: function (property) {
             return property.replace(/[A-Z]/g, m0 => "-" + m0.toLowerCase());
@@ -895,13 +899,13 @@ var DOM = Class("DOM", {
         if (isObject(event))
             capture = listener;
         else
-            event = Ary.toObject([[event, listener]]);
+            event = { [event]: listener };
 
-        for (let [evt, callback] of iter(event))
+        for (let [evt, callback] of Object.entries(event))
             event[evt] = util.wrapCallback(callback, true);
 
-        return this.each(function (elem) {
-            for (let [evt, callback] of iter(event))
+        return this.each(elem => {
+            for (let [evt, callback] of Object.entries(event))
                 elem.addEventListener(evt, callback, capture);
         });
     },
@@ -909,30 +913,31 @@ var DOM = Class("DOM", {
         if (isObject(event))
             capture = listener;
         else
-            event = Ary.toObject([[event, listener]]);
+            event = { [event]: listener };
 
-        return this.each(function (elem) {
-            for (let [k, v] of iter(event))
-                elem.removeEventListener(k, v.wrapper || v, capture);
+        return this.each(elem => {
+            for (let [event, callback] of Object.entries(event))
+                elem.removeEventListener(event, callback.wrapper || v, capture);
         });
     },
     once: function once(event, listener, capture) {
         if (isObject(event))
             capture = listener;
         else
-            event = Ary.toObject([[event, listener]]);
+            event = { [event]: listener };
 
         for (let pair of iter(event)) {
             let [evt, callback] = pair;
             event[evt] = util.wrapCallback(function wrapper(event) {
                 this.removeEventListener(evt, wrapper.wrapper, capture);
+
                 return callback.apply(this, arguments);
             }, true);
         }
 
-        return this.each(function (elem) {
-            for (let [k, v] of iter(event))
-                elem.addEventListener(k, v, capture);
+        return this.each(elem => {
+            for (let [event, callback] of Object.entries(event))
+                elem.addEventListener(event, callback, capture);
         });
     },
 
@@ -940,6 +945,7 @@ var DOM = Class("DOM", {
         this.canceled = false;
         return this.each(function (elem) {
             let evt = DOM.Event(this.document, event, params, elem);
+
             if (!DOM.Event.dispatch(elem, evt, extraProps))
                 this.canceled = true;
         }, this);
@@ -954,12 +960,18 @@ var DOM = Class("DOM", {
         try {
             if (elem instanceof Ci.nsIDOMDocument)
                 elem = elem.defaultView;
-            if (elem instanceof Ci.nsIDOMElement)
-                services.focus.setFocus(elem, flags);
-            else if (elem instanceof Ci.nsIDOMWindow) {
-                services.focus.focusedWindow = elem;
-                if (services.focus.focusedWindow != elem)
-                    services.focus.clearFocus(elem);
+
+            if (Cu.isCrossProcessWrapper(elem)) {
+                elem.focus();
+            }
+            else {
+                if (elem instanceof Ci.nsIDOMElement)
+                    services.focus.setFocus(elem, flags);
+                else if (elem instanceof Ci.nsIDOMWindow) {
+                    services.focus.focusedWindow = elem;
+                    if (services.focus.focusedWindow != elem)
+                        services.focus.clearFocus(elem);
+                }
             }
         }
         catch (e) {
@@ -1068,10 +1080,10 @@ var DOM = Class("DOM", {
 
             let params = DEFAULTS[t || "HTML"];
             let args = Object.keys(params);
+
             update(params, this.constructor.defaults[type],
-                   iter.toObject([k, opts[k]]
-                                 for (k in opts)
-                                 if (k in params)));
+                   Ary.toObject(Object.entries(opts)
+                                      .filter(([k]) => k in params)));
 
             apply(evt, "init" + t + "Event", args.map(arg => params[arg]));
             return evt;
@@ -1225,7 +1237,7 @@ var DOM = Class("DOM", {
          */
         parse: function parse(input, unknownOk=true) {
             if (isArray(input))
-                return Ary.flatten(input.map(k => this.parse(k, unknownOk)));
+                return input.flatMap(k => this.parse(k, unknownOk));
 
             let out = [];
             for (let match of util.regexp.iterate(/<.*?>?>|[^<]|<(?!.*>)/g, input)) {
@@ -1435,20 +1447,24 @@ var DOM = Class("DOM", {
             submit: { cancelable: true }
         },
 
-        types: Class.Memoize(() => iter(
-            {
-                Mouse: "click mousedown mouseout mouseover mouseup dblclick " +
-                       "hover " +
-                       "popupshowing popupshown popuphiding popuphidden " +
-                       "contextmenu",
-                Key:   "keydown keypress keyup",
-                "":    "change command dactyl-input input submit " +
-                       "load unload pageshow pagehide DOMContentLoaded " +
-                       "resize scroll"
-            }
-        ).map(([k, v]) => v.split(" ").map(v => [v, k]))
-         .flatten()
-         .toObject()),
+        types: Class.Memoize(() => {
+            return iter(
+                {
+                    Mouse: "click mousedown mouseout mouseover mouseup dblclick " +
+                           "hover " +
+                           "popupshowing popupshown popuphiding popuphidden " +
+                           "contextmenu",
+
+                    Key:   "keydown keypress keyup",
+
+                    "":    "change command dactyl-input input submit " +
+                           "load unload pageshow pagehide DOMContentLoaded " +
+                           "resize scroll"
+                }
+            ).map(([k, v]) => v.split(" ").map(v => [v, k]))
+             .flatten()
+             .toObject();
+        }),
 
         /**
          * Dispatches an event to an element as if it were a native event.
@@ -1660,7 +1676,7 @@ var DOM = Class("DOM", {
             }
 
             // FIXME: Surely we can do better.
-            for (var key in attr) {
+            for (let key in attr) {
                 if (/^xmlns(?:$|:)/.test(key)) {
                     if (_namespaces === namespaces)
                         namespaces = Object.create(namespaces);
@@ -1673,7 +1689,7 @@ var DOM = Class("DOM", {
             var elem = doc.createElementNS(vals[0] || namespaces[""],
                                            name);
 
-            for (var key in attr)
+            for (let key in attr)
                 if (!/^xmlns(?:$|:)/.test(key)) {
                     var val = attr[key];
                     if (nodes && key == "key")
@@ -1687,6 +1703,7 @@ var DOM = Class("DOM", {
                     else
                         elem.setAttributeNS(vals[0] || "", key, val);
                 }
+
             args.forEach(function (e) {
                 elem.appendChild(tag(e, namespaces));
             });
@@ -1813,7 +1830,7 @@ var DOM = Class("DOM", {
 
             // FIXME: Surely we can do better.
             let skipAttr = {};
-            for (var key in attr) {
+            for (let key in attr) {
                 if (/^xmlns(?:$|:)/.test(key)) {
                     if (_namespaces === namespaces)
                         namespaces = update({}, namespaces);
@@ -1831,7 +1848,7 @@ var DOM = Class("DOM", {
             let res = [indent, "<", name];
 
             for (let [key, val] of iter(attr)) {
-                if (hasOwnProperty(skipAttr, key))
+                if (hasOwnProp(skipAttr, key))
                     continue;
 
                 let vals = parseNamespace(key);
@@ -1961,11 +1978,11 @@ var DOM = Class("DOM", {
      * @returns {string}
      */
     makeXPath: function makeXPath(nodes) {
-        return Ary(nodes).map(util.debrace).flatten()
-                         .map(node => /^[a-z]+:/.test(node) ? node
-                                                            : [node, "xhtml:" + node])
-                         .flatten()
-                         .map(node => "//" + node).join(" | ");
+        return nodes.flatMap(util.debrace)
+                    .flatMap(node => /^[a-z]+:/.test(node) ? node
+                                                           : [node, "xhtml:" + node])
+                    .map(node => "//" + node)
+                    .join(" | ");
     },
 
     namespaces: {
@@ -1984,7 +2001,7 @@ var DOM = Class("DOM", {
 
 Object.keys(DOM.Event.types).forEach(function (event) {
     let name = event.replace(/-(.)/g, (m, m1) => m1.toUpperCase());
-    if (!hasOwnProperty(DOM.prototype, name))
+    if (!hasOwnProp(DOM.prototype, name))
         DOM.prototype[name] =
             function _event(arg, extra) {
                 return this[callable(arg) ? "listen" : "dispatch"](event, arg, extra);

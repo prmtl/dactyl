@@ -1,4 +1,4 @@
-// Copyright (c) 2010-2014 Kris Maglione <maglione.k@gmail.com>
+// Copyright (c) 2010-2015 Kris Maglione <maglione.k@gmail.com>
 //
 // This work is licensed for reuse under an MIT license. Details are
 // given in the LICENSE.txt file included with this file.
@@ -215,12 +215,11 @@ var Contexts = Module("contexts", {
                     memoize(contexts.hives, name,
                             () => Object.create(
                                     Object.create(contexts.hiveProto,
-                                                { _hive: { value: name } })));
+                                                  { _hive: { value: name } })));
 
                     memoize(contexts.groupsProto, name, function () {
-                        return [group[name]
-                                for (group of values(this.groups))
-                                if (hasOwnProperty(group, name))];
+                        return this.groups.filter(group => hasOwnProp(group, name))
+                                          .map(group => group[name]);
                     });
                 },
 
@@ -242,13 +241,13 @@ var Contexts = Module("contexts", {
         let id   = util.camelCase(name.replace(/\.[^.]*$/, ""));
 
         let contextPath = file.path;
-        let self = hasOwnProperty(plugins, contextPath) && plugins.contexts[contextPath];
+        let self = hasOwnProp(plugins, contextPath) && plugins.contexts[contextPath];
 
         if (!self && isPlugin && false)
-            self = hasOwnProperty(plugins, id) && plugins[id];
+            self = hasOwnProp(plugins, id) && plugins[id];
 
         if (self) {
-            if (hasOwnProperty(self, "onUnload"))
+            if (hasOwnProp(self, "onUnload"))
                 util.trapErrors("onUnload", self);
         }
         else {
@@ -340,7 +339,7 @@ var Contexts = Module("contexts", {
                                            .replace(File.PATH_SEP, "-");
         let id   = util.camelCase(name.replace(/\.[^.]*$/, ""));
 
-        let self = hasOwnProperty(this.pluginModules, canonical) && this.pluginModules[canonical];
+        let self = hasOwnProp(this.pluginModules, canonical) && this.pluginModules[canonical];
 
         if (!self) {
             self = Object.create(jsmodules);
@@ -409,7 +408,9 @@ var Contexts = Module("contexts", {
         return frame;
     },
 
-    groups: Class.Memoize(function () { return this.matchingGroups(); }),
+    groups: Class.Memoize(function () {
+        return this.matchingGroups();
+    }),
 
     allGroups: Class.Memoize(function () {
         return Object.create(this.groupsProto, {
@@ -446,7 +447,7 @@ var Contexts = Module("contexts", {
         let need = hive ? [hive]
                         : Object.keys(this.hives);
 
-        return this.groupList.filter(group => need.some(hasOwnProperty.bind(null, group)));
+        return this.groupList.filter(group => need.some(hasOwnProp.bind(null, group)));
     },
 
     addGroup: function addGroup(name, description, filter, persist, replace) {
@@ -506,7 +507,7 @@ var Contexts = Module("contexts", {
     getGroup: function getGroup(name, hive) {
         if (name === "default")
             var group = this.context && this.context.context && this.context.context.GROUP;
-        else if (hasOwnProperty(this.groupMap, name))
+        else if (hasOwnProp(this.groupMap, name))
             group = this.groupMap[name];
 
         if (group && hive)
@@ -691,7 +692,7 @@ var Contexts = Module("contexts", {
 
                 util.assert(!group.builtin ||
                                 !["-description", "-locations", "-nopersist"]
-                                    .some(hasOwnProperty.bind(null, args.explicitOpts)),
+                                    .some(prop => hasOwnProp(args.explicitOpts, prop)),
                             _("group.cantModifyBuiltin"));
             }, {
                 argCount: "?",
@@ -726,24 +727,25 @@ var Contexts = Module("contexts", {
                 ],
                 serialGroup: 20,
                 serialize: function () {
-                    return [
-                        {
+                    return contexts.initializedGroups()
+                                   .filter(group => !group.builtin && group.persist)
+                                   .map(group => ({
                             command: this.name,
                             bang: true,
-                            options: iter([v, typeof group[k] == "boolean" ? null : group[k]]
-                                        // FIXME: this map is expressed multiple times
-                                        for ([k, v] of iter({
-                                            args: "-args",
-                                            description: "-description",
-                                            filter: "-locations"
-                                        }))
-                                        if (group[k])).toObject(),
+                            options: Ary.toObject(
+                                Object.entries({
+                                    args: "-args",
+                                    description: "-description",
+                                    filter: "-locations"
+                                })
+                                .filter(([k]) => group[k])
+                                .map(([k, v]) => [v,
+                                                  typeof group[k] == "boolean" ? null : group[k]])
+                            ),
                             arguments: [group.name],
                             ignoreDefaults: true
-                        }
-                        for (group of contexts.initializedGroups())
-                        if (!group.builtin && group.persist)
-                    ].concat([{ command: this.name, arguments: ["user"] }]);
+                        }))
+                        .concat([{ command: this.name, arguments: ["user"] }]);
                 }
             });
 
@@ -842,7 +844,9 @@ var Contexts = Module("contexts", {
             context.keys = {
                 active: group => group.filter(uri),
                 text: "name",
-                description: function (g) ["", g.filter.toJSONXML ? g.filter.toJSONXML(modules).concat("\u00a0") : "", g.description || ""]
+                description: g => ["",
+                                   g.filter.toJSONXML ? g.filter.toJSONXML(modules).concat("\u00a0") : "",
+                                   g.description || ""],
             };
             context.completions = (active === undefined ? contexts.groupList : contexts.initializedGroups(active))
                                     .slice(0, -1);

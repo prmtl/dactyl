@@ -1,4 +1,4 @@
-// Copyright (c) 2008-2014 Kris Maglione <maglione.k at Gmail>
+// Copyright (c) 2008-2015 Kris Maglione <maglione.k at Gmail>
 //
 // This work is licensed for reuse under an MIT license. Details are
 // given in the LICENSE.txt file included with this file.
@@ -14,16 +14,18 @@ var ProcessorStack = Class("ProcessorStack", {
         this.buffer = "";
         this.events = [];
 
-        events.dbg("STACK " + mode);
+        if (events.debug)
+            events.dbg("STACK " + mode);
 
         let main = { __proto__: mode.main, params: mode.params };
-        this.modes = Ary([mode.params.keyModes, main, mode.main.allBases.slice(1)]).flatten().compact();
+        this.modes = [...(mode.params.keyModes || []),
+                      main,
+                      ...mode.main.allBases.slice(1)];
 
         if (builtin)
             hives = hives.filter(h => h.name === "builtin");
 
-        this.processors = this.modes.map(m => hives.map(h => KeyProcessor(m, h)))
-                                    .flatten().array;
+        this.processors = this.modes.flatMap(mode => hives.map(hive => KeyProcessor(mode, hive)))
         this.ownsBuffer = !this.processors.some(p => p.main.ownsBuffer);
 
         for (let input of this.processors) {
@@ -51,7 +53,6 @@ var ProcessorStack = Class("ProcessorStack", {
     }),
 
     notify: function () {
-        events.dbg("NOTIFY()");
         events.keyEvents = [];
         events.processor = null;
         if (!this.execute(undefined, true)) {
@@ -69,8 +70,9 @@ var ProcessorStack = Class("ProcessorStack", {
     },
 
     execute: function execute(result, force) {
-        events.dbg("EXECUTE(" + this._result(result) + ", " + force + ") events:" + this.events.length
-                   + " processors:" + this.processors.length + " actions:" + this.actions.length);
+        if (events.debug)
+            events.dbg("EXECUTE(" + this._result(result) + ", " + force + ") events:" + this.events.length
+                       + " processors:" + this.processors.length + " actions:" + this.actions.length);
 
         let length = 1;
 
@@ -80,7 +82,7 @@ var ProcessorStack = Class("ProcessorStack", {
         if (this.ownsBuffer)
             statusline.inputBuffer = this.processors.length ? this.buffer : "";
 
-        if (!this.processors.some(p => !p.extended) && this.actions.length) {
+        if (this.processors.every(p => p.extended) && this.actions.length) {
             // We have matching actions and no processors other than
             // those waiting on further arguments. Execute actions as
             // long as they continue to return PASS.
@@ -89,7 +91,8 @@ var ProcessorStack = Class("ProcessorStack", {
                 while (callable(action)) {
                     length = action.eventLength;
                     action = dactyl.trapErrors(action);
-                    events.dbg("ACTION RES: " + length + " " + this._result(action));
+                    if (events.debug)
+                        events.dbg("ACTION RES: " + length + " " + this._result(action));
                 }
                 if (action !== Events.PASS)
                     break;
@@ -111,9 +114,8 @@ var ProcessorStack = Class("ProcessorStack", {
         }
         else if (result !== Events.KILL && !this.actions.length &&
                  !(this.events[0].isReplay || this.passUnknown ||
-                   this.modes.some(function (m) {
-                       return m.passEvent(this);
-                   }, this.events[0]))) {
+                   this.modes.some(mode => mode.passEvent(this.events[0])))) {
+
             // No patching processors, this isn't a fake, pass-through
             // event, we're not in pass-through mode, and we're not
             // choosing to pass unknown keys. Kill the event and beep.
@@ -129,7 +131,8 @@ var ProcessorStack = Class("ProcessorStack", {
             // pass the event.
             result = Events.PASS;
 
-        events.dbg("RESULT: " + length + " " + this._result(result) + "\n\n");
+        if (events.debug)
+            events.dbg("RESULT: " + length + " " + this._result(result) + "\n\n");
 
         if (result !== Events.PASS || this.events.length > 1)
             if (result !== Events.ABORT || !this.events[0].isReplay)
@@ -138,7 +141,7 @@ var ProcessorStack = Class("ProcessorStack", {
         if (result === Events.PASS_THROUGH || result === Events.PASS && this.passUnknown)
             events.passing = true;
 
-        if (result === Events.PASS_THROUGH && this.keyEvents.length)
+        if (events.debug && result === Events.PASS_THROUGH && this.keyEvents.length)
             events.dbg("PASS_THROUGH:\n\t" + this.keyEvents.map(e => [e.type, DOM.Event.stringify(e)]).join("\n\t"));
 
         if (result === Events.PASS_THROUGH)
@@ -146,10 +149,12 @@ var ProcessorStack = Class("ProcessorStack", {
         else {
             let list = this.events.filter(e => e.defaultPrevented && !e.dactylDefaultPrevented);
 
-            if (result === Events.PASS)
-                events.dbg("PASS THROUGH: " + list.slice(0, length).filter(e => e.type === "keypress").map(DOM.Event.bound.stringify));
-            if (list.length > length)
-                events.dbg("REFEED: " + list.slice(length).filter(e => e.type === "keypress").map(DOM.Event.bound.stringify));
+            if (events.debug) {
+                if (result === Events.PASS)
+                    events.dbg("PASS THROUGH: " + list.slice(0, length).filter(e => e.type === "keypress").map(DOM.Event.bound.stringify));
+                if (list.length > length)
+                    events.dbg("REFEED: " + list.slice(length).filter(e => e.type === "keypress").map(DOM.Event.bound.stringify));
+            }
 
             if (result === Events.PASS)
                 events.feedevents(null, list.slice(0, length), { skipmap: true, isMacro: true, isReplay: true });
@@ -174,14 +179,16 @@ var ProcessorStack = Class("ProcessorStack", {
         let actions = [];
         let processors = [];
 
-        events.dbg("PROCESS(" + key + ") skipmap: " + event.skipmap + " macro: " + event.isMacro + " replay: " + event.isReplay);
+        if (events.debug)
+            events.dbg("PROCESS(" + key + ") skipmap: " + event.skipmap + " macro: " + event.isMacro + " replay: " + event.isReplay);
 
         for (let input of this.processors) {
             let res = input.process(event);
             if (res !== Events.ABORT)
                 var result = res;
 
-            events.dbg("RES: " + input + " " + this._result(res));
+            if (events.debug)
+                events.dbg("RES: " + input + " " + this._result(res));
 
             if (res === Events.KILL)
                 break;
@@ -195,9 +202,11 @@ var ProcessorStack = Class("ProcessorStack", {
                 processors.push(res);
         }
 
-        events.dbg("RESULT: " + event.defaultPrevented + " " + this._result(result));
-        events.dbg("ACTIONS: " + actions.length + " " + this.actions.length);
-        events.dbg("PROCESSORS:", processors, "\n");
+        if (events.debug) {
+            events.dbg("RESULT: " + event.defaultPrevented + " " + this._result(result));
+            events.dbg("ACTIONS: " + actions.length + " " + this.actions.length);
+            events.dbg("PROCESSORS:", processors, "\n");
+        }
 
         this._actions = actions;
         this.actions = actions.concat(this.actions);

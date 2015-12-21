@@ -99,8 +99,8 @@ update(Highlight.prototype, {
 
     toString: function () {
         return "Highlight(" + this.class + ")\n\t" +
-               [k + ": " + JSON.stringify(String(v))
-                for ([k, v] of this)].join("\n\t");
+               Array.from(this, ([k, v]) => `${k}: ${JSON.stringify(String(v))}`)
+                    .join("\n\t")
     }
 });
 
@@ -251,14 +251,15 @@ var Highlights = Module("Highlight", {
         });
     },
 
-    groupRegexp: util.regexp(literal(function () /*
+    groupRegexp: util.regexp(String.raw`
         ^
         (\s* (?:\S|\s\S)+ \s+)
         \{ ([^}]*) \}
         \s*
         $
-    */$), "gmx"),
-    sheetRegexp: util.regexp(literal(function () /*
+    `, "gmx"),
+
+    sheetRegexp: util.regexp(String.raw`
         ^\s*
         !? \*?
              (?P<group>    (?:[^;\s]|\s[^;\s])+ )
@@ -267,7 +268,7 @@ var Highlights = Module("Highlight", {
         (?:; (?P<extends>  (?:[^;\s]|\s[^;\s])+ )? )?
         \s*  (?P<css>      .*)
         $
-    */$), "x"),
+    `, "x"),
     // </css>
 
     /**
@@ -351,7 +352,7 @@ var Highlights = Module("Highlight", {
         commands.add(["hi[ghlight]"],
             "Set the style of certain display elements",
             function (args) {
-                let style = literal(function () /*
+                let style = `
                     ;
                     display: inline-block !important;
                     position: static !important;
@@ -359,7 +360,7 @@ var Highlights = Module("Highlight", {
                     width: 3em !important; min-width: 3em !important; max-width: 3em !important;
                     height: 1em !important; min-height: 1em !important; max-height: 1em !important;
                     overflow: hidden !important;
-                */$);
+                `;
                 let clear = args[0] == "clear";
                 if (clear)
                     args.shift();
@@ -430,18 +431,16 @@ var Highlights = Module("Highlight", {
                     }
                 ],
                 serialize: function () {
-                    return [
-                        {
-                            command: this.name,
-                            arguments: [v.class],
-                            literalArg: v.value,
-                            options: {
-                                "-link": v.extends.length ? v.extends : undefined
-                            }
-                        }
-                        for (v of highlight)
-                        if (v.value != v.defaultValue)
-                    ];
+                    return Array.from(highlight)
+                                .filter(v => v.value != v.defaultValue)
+                                .map(v => ({
+                                    command: this.name,
+                                    arguments: [v.class],
+                                    literalArg: v.value,
+                                    options: {
+                                        "-link": v.extends.length ? v.extends : undefined
+                                    }
+                                }));
                 }
             });
     },
@@ -455,19 +454,20 @@ var Highlights = Module("Highlight", {
             context.keys = { text: f => f.leafName.replace(extRe, ""),
                              description: ".parent.path" };
             context.completions =
-                Ary.flatten(
-                      io.getRuntimeDirectories("colors").map(
-                          dir => dir.readDirectory()
-                                    .filter(file => extRe.test(file.leafName))))
-                   .concat([
-                      { leafName: "default", parent: { path: /*L*/"Revert to builtin colorscheme" } }
-                   ]);
+                io.getRuntimeDirectories("colors")
+                  .flatMap(dir => dir.readDirectory()
+                                     .filter(file => extRe.test(file.leafName)))
+                  .concat([
+                      { leafName: "default",
+                        parent: { path: /*L*/"Revert to builtin colorscheme" } }
+                  ]);
 
         };
 
         completion.highlightGroup = function highlightGroup(context) {
             context.title = ["Highlight Group", "Value"];
-            context.completions = [[v.class, v.value] for (v of highlight)];
+            context.completions = Array.from(highlight,
+                                             v => [v.class, v.value]);
         };
     },
     javascript: function initJavascript(dactyl, modules, window) {

@@ -155,12 +155,15 @@ var Modes = Module("modes", {
                     dactyl.focusContent(true);
                 if (prev.main == modes.NORMAL) {
                     dactyl.focusContent(true);
-                    for (let frame of buffer.allFrames()) {
-                        // clear any selection made
-                        let selection = frame.getSelection();
-                        if (selection && !selection.isCollapsed)
-                            selection.collapseToStart();
-                    }
+
+                    let { win } = buffer;
+                    if (!Cu.isCrossProcessWrapper(win) && win instanceof Ci.nsIDOMWindow)
+                        for (let frame of buffer.allFrames()) {
+                            // clear any selection made
+                            let selection = frame.getSelection();
+                            if (selection && !selection.isCollapsed)
+                                selection.collapseToStart();
+                        }
                 }
 
             }
@@ -206,9 +209,9 @@ var Modes = Module("modes", {
     get all() { return this._modes.slice(); },
 
     get mainModes() {
-        return (mode
-                for ([k, mode] of iter(modes._modeMap))
-                if (!mode.extended && mode.name == k));
+        return Object.entries(modes._modeMap)
+                     .filter(([name, mode]) => !mode.extended && mode.name == name)
+                     .map(([name, mode]) => mode);
     },
 
     get mainMode() { return this._modeMap[this._main]; },
@@ -592,9 +595,9 @@ var Modes = Module("modes", {
                 for (let base of mode.bases)
                     tree[base.name][mode.name] = tree[mode.name];
 
-            let roots = iter([m.name, tree[m.name]]
-                             for (m of list)
-                             if (!m.bases.length)).toObject();
+            let roots = Ary.toObject(
+                list.filter(mode => !mode.bases.length)
+                    .map(mode => [mode.name, tree[mode.name]]));
 
             function rec(obj) {
                 let res = ["ul", { "dactyl:highlight": "Dense" }];
@@ -659,7 +662,7 @@ var Modes = Module("modes", {
                     return (this.value.find(v => val.some(m => m.name === v.mode))
                                 || { result: default_ }).result;
 
-                return hasOwnProperty(this.valueMap, val) ? this.valueMap[val] : default_;
+                return hasOwnProp(this.valueMap, val) ? this.valueMap[val] : default_;
             },
 
             setter: function (vals) {
@@ -678,12 +681,14 @@ var Modes = Module("modes", {
 
             validator: function validator(vals) {
                 return vals.map(v => v.replace(/^!/, ""))
-                           .every(k => hasOwnProperty(this.values, k));
+                           .every(k => hasOwnProp(this.values, k));
             },
 
             get values() {
-                return Ary.toObject([[m.name.toLowerCase(), m.description]
-                                     for (m of modes._modes) if (!m.hidden)]);
+                return Ary.toObject(
+                    modes._modes.filter(mode => !mode.hidden)
+                         .map(mode => [mode.name.toLowerCase(),
+                                       mode.description]));
             }
         };
 

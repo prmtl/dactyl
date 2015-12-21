@@ -251,7 +251,7 @@ var Command = Class("Command", {
 
     /** @property {[string]} All of this command's long and short names. */
     names: Class.Memoize(function () {
-        return this.names = Ary.flatten(this.parsedSpecs);
+        return this.parsedSpecs.flatMap();
     }),
 
     /** @property {string} This command's description, as shown in :listcommands */
@@ -330,9 +330,9 @@ var Command = Class("Command", {
     _options: [],
 
     optionMap: Class.Memoize(function () {
-        return Ary(this.options)
-                   .map(opt => opt.names.map(name => [name, opt]))
-                   .flatten().toObject();
+        return Ary.toObject(
+            Array.from(this.options)
+                 .flatMap(opt => opt.names.map(name => [name, opt])));
     }),
 
     newArgs: function newArgs(base) {
@@ -349,8 +349,8 @@ var Command = Class("Command", {
                 explicitOpts: Class.Memoize(() => ({})),
 
                 has: function AP_has(opt) {
-                    return hasOwnProperty(this.explicitOpts, opt) ||
-                           typeof opt === "number" && hasOwnProperty(this, opt);
+                    return hasOwnProp(this.explicitOpts, opt) ||
+                           typeof opt === "number" && hasOwnProp(this, opt);
                 },
 
                 get literalArg() {
@@ -456,7 +456,7 @@ var Command = Class("Command", {
      *  @returns {Array}
      */
     parseSpecs: function parseSpecs(specs) {
-        return specs.map(function (spec) {
+        return specs.map(spec => {
             let [, head, tail] = /([^[]+)(?:\[(.*)])?/.exec(spec);
             return tail ? [head + tail, head] : [head];
         });
@@ -465,19 +465,42 @@ var Command = Class("Command", {
 
 // Prototype.
 var Ex = Module("Ex", {
-    Local: function Local(dactyl, modules, window) {
+    Local(dactyl, modules, window) {
         return {
+            init() {},
+
             get commands() { return modules.commands; },
             get context() { return modules.contexts.context; }
         };
     },
 
-    _args: function E_args(cmd, args) {
+    commands: null,
+
+    init() {
+        let proxy = new Proxy(this, {
+            get(target, prop, receiver) {
+                if (prop === "isProxy")
+                    return [true, receiver === proxy].join(",");
+
+                if (prop in target || receiver === proxy)
+                    return target[prop];
+
+                return function (...args) {
+                    return this._run(prop)(...args);
+                };
+            },
+        });
+
+        return proxy;
+    },
+
+    _args(cmd, args) {
         args = Array.slice(args);
 
         let res = cmd.newArgs({ context: this.context });
+
         if (isObject(args[0]))
-            for (let [k, v] of iter(args.shift()))
+            for (let [k, v] of Object.entries(args.shift()))
                 if (k == "!")
                     res.bang = v;
                 else if (k == "#")
@@ -492,12 +515,14 @@ var Ex = Module("Ex", {
                     Class.replaceProperty(res, opt.names[0], val);
                     res.explicitOpts[opt.names[0]] = val;
                 }
-        for (let [i, val] of Ary.iterItems(args))
+
+        for (let [i, val] of args.entries())
             res[i] = String(val);
+
         return res;
     },
 
-    _complete: function E_complete(cmd) {
+    _complete(cmd) {
         return (context, func, obj, args) => {
             args = this._args(cmd, args);
             args.completeArg = args.length - 1;
@@ -506,7 +531,7 @@ var Ex = Module("Ex", {
         };
     },
 
-    _run: function E_run(name) {
+    _run(name) {
         const self = this;
         let cmd = this.commands.get(name);
         util.assert(cmd, _("command.noSuch"));
@@ -519,10 +544,6 @@ var Ex = Module("Ex", {
             dactylCompleter: self._complete(cmd)
         });
     },
-
-    __noSuchMethod__: function __noSuchMethod__(meth, args) {
-        return this._run(meth).apply(this, args);
-    }
 });
 
 var CommandHive = Class("CommandHive", Contexts.Hive, {
@@ -574,7 +595,9 @@ var CommandHive = Class("CommandHive", Contexts.Hive, {
         if (this.cached)
             this.modules.initDependencies("commands");
         this.cached = false;
-        return Ary.iterValues(this._list.sort((a, b) => a.name > b.name));
+
+        return this._list.sort((a, b) => String.localeCompare(a.name, b.name))
+                   .values();
     },
 
     /** @property {string} The last executed Ex command line. */
@@ -604,7 +627,7 @@ var CommandHive = Class("CommandHive", Contexts.Hive, {
         extra.hive = this;
         extra.parsedSpecs = Command.parseSpecs(specs);
 
-        let names = Ary.flatten(extra.parsedSpecs);
+        let names = extra.parsedSpecs.flatMap();
         let name = names[0];
 
         if (this.name != "builtin") {
@@ -616,7 +639,18 @@ var CommandHive = Class("CommandHive", Contexts.Hive, {
         }
 
         for (let name of names) {
-            ex.__defineGetter__(name, function () { return this._run(name); });
+            if (false)
+                // For some reason, the `this` object of the getter gets
+                // mutilated if we do this in recent Firefox versions.
+                // Just rely on the proxy for now.
+                Object.defineProperty(ex, name, {
+                    configurable: true,
+                    enumerable: true,
+                    get() {
+                        return this._run(name);
+                    },
+                });
+
             if (name in this._map && !this._map[name].isPlaceholder)
                 this.remove(name);
         }
@@ -764,7 +798,7 @@ var Commands = Module("commands", {
                         let lines = string.split(/\r\n|[\r\n]/);
                         let startLine = context.line;
 
-                        for (var i = 0; i < lines.length && !context.finished; i++) {
+                        for (let i = 0; i < lines.length && !context.finished; i++) {
                             // Deal with editors from Silly OSs.
                             let line = lines[i].replace(/\r$/, "");
 
@@ -800,10 +834,13 @@ var Commands = Module("commands", {
             list: function list(filter, hives) {
                 const { commandline, completion } = this.modules;
                 function completerToString(completer) {
-                    if (completer)
-                        return [k
-                                for ([k, v] of iter(config.completers))
-                                if (completer == completion.bound[v])][0] || "custom";
+                    if (completer) {
+                        for (let [key, val] of Object.entries(config.completers))
+                             if (completion.bound(val) === completer)
+                                 return key;
+
+                         return "custom";
+                    }
 
                     return "";
                 }
@@ -888,9 +925,9 @@ var Commands = Module("commands", {
         extra.definedAt = contexts.getCaller(caller);
         return apply(group, "add", arguments);
     },
-    addUserCommand: deprecated("group.commands.add", { get: function addUserCommand() this.user.bound._add }),
-    getUserCommands: deprecated("iter(group.commands)", function getUserCommands() iter(this.user).toArray()),
-    removeUserCommand: deprecated("group.commands.remove", { get: function removeUserCommand() this.user.bound.remove }),
+    addUserCommand: deprecated("group.commands.add", { get: function addUserCommand() { return this.user.bound._add } }),
+    getUserCommands: deprecated("iter(group.commands)", function getUserCommands() { return iter(this.user).toArray(); }),
+    removeUserCommand: deprecated("group.commands.remove", { get: function removeUserCommand() { return this.user.bound.remove; } }),
 
     /**
      * Returns the specified command invocation object serialized to
@@ -904,10 +941,10 @@ var Commands = Module("commands", {
 
         let defaults = {};
         if (args.ignoreDefaults)
-            defaults = Ary(this.options).map(opt => [opt.names[0], opt.default])
-                                        .toObject();
+            defaults = Ary.toObject(Array.from(this.options,
+                                               opt => [opt.names[0], opt.default]));
 
-        for (let [opt, val] of iter(args.options || {})) {
+        for (let [opt, val] of Object.entries(args.options || {})) {
             if (val === undefined)
                 continue;
             if (val != null && defaults[opt] === val)
@@ -1074,7 +1111,7 @@ var Commands = Module("commands", {
             let matchOpts = function matchOpts(arg) {
                 // Push possible option matches into completions
                 if (complete && !onlyArgumentsRemaining)
-                    completeOpts = options.filter(opt => (opt.multiple || !hasOwnProperty(args, opt.names[0])));
+                    completeOpts = options.filter(opt => (opt.multiple || !hasOwnProp(args, opt.names[0])));
             };
             let resetCompletions = function resetCompletions() {
                 completeOpts = null;
@@ -1306,14 +1343,14 @@ var Commands = Module("commands", {
         }
     },
 
-    nameRegexp: util.regexp(literal(function () /*
+    nameRegexp: util.regexp(String.raw`
             [^
                 0-9
                 <forbid>
             ]
             [^ <forbid> ]*
-        */$), "gx", {
-        forbid: util.regexp(String.replace(literal(function () /*
+        `, "gx", {
+        forbid: util.regexp(String.replace(String.raw`
             U0000-U002c // U002d -
             U002e-U002f
             U003a-U0040 // U0041-U005a a-z
@@ -1336,7 +1373,7 @@ var Commands = Module("commands", {
             Ufe70-Ufeff // Arabic Presentation Forms-B
             Uff00-Uffef // Halfwidth and Fullwidth Forms
             Ufff0-Uffff // Specials
-        */$), /U/g, "\\u"), "x")
+        `, /U/g, "\\u"), "x")
     }),
 
     validName: Class.Memoize(function validName() {
@@ -1344,7 +1381,7 @@ var Commands = Module("commands", {
     }),
 
     commandRegexp: Class.Memoize(function commandRegexp() {
-        return util.regexp(literal(function () /*
+        return util.regexp(String.raw`
             ^
             (?P<spec>
                 (?P<prespace> [:\s]*)
@@ -1359,7 +1396,7 @@ var Commands = Module("commands", {
                 (?:. | \n)*?
             )?
             $
-        */$), "x", {
+        `, "x", {
             name: this.nameRegexp
         });
     }),
@@ -1533,6 +1570,7 @@ var Commands = Module("commands", {
             for (var [command, args] of commands.parseCommands(context.filter, context))
                 if (args.trailing)
                     context.advance(args.commandString.length + 1);
+
             if (!args)
                 args = { commandString: context.filter };
 
@@ -1715,7 +1753,8 @@ var Commands = Module("commands", {
                         names: ["-complete", "-C"],
                         description: "The argument completion function",
                         completer: function (context) {
-                            return [[k, ""] for ([k, v] of iter(config.completers))];
+                            return Object.entries(config.completers)
+                                         .map(([k, v]) => [k, ""]);
                         },
                         type: CommandOption.STRING,
                         validator: function (arg) {
@@ -1758,28 +1797,32 @@ var Commands = Module("commands", {
                 literal: 1,
 
                 serialize: function () {
-                    return Ary(commands.userHives)
+                    return commands.userHives
                         .filter(h => h.persist)
-                        .map(hive => [
-                            {
+                        .flatMap(hive =>
+                            Array.from(hive)
+                                 .filter(cmd => cmd.persist)
+                                 .map(cmd =>
+                            ({
                                 command: this.name,
                                 bang: true,
-                                options: iter([v, typeof cmd[k] == "boolean" ? null : cmd[k]]
-                                            // FIXME: this map is expressed multiple times
-                                            for ([k, v] of iter({
-                                                argCount: "-nargs",
-                                                bang: "-bang",
-                                                count: "-count",
-                                                description: "-description"
-                                            }))
-                                            if (cmd[k])).toObject(),
+                                options: Ary.toObject(
+                                    Object.entries({
+                                        argCount: "-nargs",
+                                        bang: "-bang",
+                                        count: "-count",
+                                        description: "-description",
+                                    })
+                                    .filter(([k, v]) => cmd[k])
+                                    .map(([k, v]) => [
+                                        v,
+                                        typeof cmd[k] == "boolean" ? null : cmd[k]
+                                    ])),
                                 arguments: [cmd.name],
                                 literalArg: cmd.action,
                                 ignoreDefaults: true
-                            }
-                            for (cmd of hive) if (cmd.persist)
-                        ])
-                        .flatten().array;
+                            }))
+                        );
                 }
             });
 
@@ -1832,7 +1875,7 @@ var Commands = Module("commands", {
             iterateIndex: function (args) {
                 let tags = help.tags;
                 return this.iterate(args).filter(cmd => (cmd.hive === commands.builtin ||
-                                                         hasOwnProperty(tags, cmd.helpTag)));
+                                                         hasOwnProp(tags, cmd.helpTag)));
             },
             format: {
                 headings: ["Command", "Group", "Description"],
@@ -1868,12 +1911,11 @@ var Commands = Module("commands", {
         setCompleter([CommandHive.prototype.get,
                       CommandHive.prototype.remove],
                      [function () {
-                         return [[c.names, c.description] for (c of this)];
+                         return Array.from(this, cmd => [c.names, c.description]);
                      }]);
         setCompleter([Commands.prototype.get],
                      [function () {
-                         return [[c.names, c.description]
-                                 for (c of this.iterator())];
+                         return Array.from(this.iterator(), cmd => [c.names, c.description]);
                      }]);
     },
     mappings: function initMappings(dactyl, modules, window) {

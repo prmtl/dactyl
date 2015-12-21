@@ -1,4 +1,4 @@
-// Copyright (c) 2008-2014 Kris Maglione <maglione.k@gmail.com>
+// Copyright (c) 2008-2015 Kris Maglione <maglione.k@gmail.com>
 //
 // This work is licensed for reuse under an MIT license. Details are
 // given in the LICENSE.txt file included with this file.
@@ -27,16 +27,16 @@ var HelpBuilder = Class("HelpBuilder", {
 
             // Scrape the list of help files from all.xml
             this.tags["all"] = this.tags["all.xml"] = "all";
-            let files = this.findHelpFile("all").map(doc =>
-                    [f.value for (f of DOM.XPath("//dactyl:include/@href", doc))]);
+            let files = this.findHelpFile("all").flatMap(
+                doc => Array.from(DOM.XPath("//dactyl:include/@href", doc),
+                                  f => f.value));
 
             // Scrape the tags from the rest of the help files.
-            Ary.flatten(files).forEach(function (file) {
+            for (let file of files) {
                 this.tags[file + ".xml"] = file;
-                this.findHelpFile(file).forEach(function (doc) {
+                for (let doc of this.findHelpFile(file))
                     this.addTags(file, doc);
-                }, this);
-            }, this);
+            }
         }
         finally {
             delete help._data;
@@ -95,7 +95,7 @@ var Help = Module("Help", {
         update(services["dactyl:"].providers, {
             "help": Loop((uri, path) => help.files[path]),
             "help-overlay": Loop((uri, path) => help.overlays[path]),
-            "help-tag": Loop(function (uri, path) {
+            "help-tag": Loop((uri, path) => {
                 let tag = decodeURIComponent(path);
                 if (tag in help.files)
                     return RedirectChannel("dactyl://help/" + tag, uri);
@@ -111,13 +111,13 @@ var Help = Module("Help", {
                                     { mimeType: "text/plain;charset=UTF-8" })
                            .responseText;
 
-            let re = util.regexp(UTF8(literal(function () /*
+            let re = util.regexp(UTF8(String.raw`
                   ^ (?P<comment> \s* # .*\n)
 
                 | ^ (?P<space> \s*)
                     (?P<char>  [-•*+]) \ //
                   (?P<content> .*\n
-                     (?: \2\ \ .*\n | \s*\n)* )
+                     (?: ${"\\2" /* This is incorrectly interpreted as an octal literal otherwise */}\ \ .*\n | \s*\n)* )
 
                 | (?P<par>
                       (?: ^ [^\S\n]*
@@ -127,12 +127,14 @@ var Help = Module("Help", {
                   )
 
                 | (?: ^ [^\S\n]* \n) +
-            */$)), "gmxy");
+            `), "gmxy");
 
-            let betas = util.regexp(/\[((?:b|rc)\d)\]/, "gx");
+            let matchBetas = util.regexp(/\[((?:b|rc)\d)\]/, "gx");
 
-            let beta = Ary(betas.iterate(NEWS))
-                        .map(m => m[1]).uniq().slice(-1)[0];
+            let betas = Array.from(matchBetas.iterate(NEWS),
+                                   match => match[1]);
+
+            let beta = betas.sort().pop();
 
             function rec(text, level, li) {
                 let res = [];
@@ -154,7 +156,9 @@ var Help = Module("Help", {
                     else if (match.par) {
                         let [, par, tags] = /([^]*?)\s*((?:\[[^\]]+\])*)\n*$/.exec(match.par);
                         let t = tags;
-                        tags = Ary(betas.iterate(tags)).map(m => m[1]);
+
+                        tags = Array.from(matchBetas.iterate(tags),
+                                          match => match[1]);
 
                         let group = !tags.length               ? "" :
                                     !tags.some(t => t == beta) ? "HelpNewsOld" : "HelpNewsNew";
@@ -241,7 +245,7 @@ var Help = Module("Help", {
             * @returns {string}
             */
             findHelp: function (topic, consolidated) {
-                if (!consolidated && hasOwnProperty(help.files, topic))
+                if (!consolidated && hasOwnProp(help.files, topic))
                     return topic;
                 let items = modules.completion._runCompleter("help", topic, null, !!consolidated).items;
                 let partialMatch = null;
@@ -274,7 +278,7 @@ var Help = Module("Help", {
                 if (!topic) {
                     let helpFile = consolidated ? "all" : modules.options["helpfile"];
 
-                    if (hasOwnProperty(help.files, helpFile))
+                    if (hasOwnProp(help.files, helpFile))
                         dactyl.open("dactyl://help/" + helpFile, { from: "help" });
                     else
                         dactyl.echomsg(_("help.noFile", JSON.stringify(helpFile)));
@@ -297,21 +301,21 @@ var Help = Module("Help", {
 
                 dactyl.initHelp();
                 if (FILE.isDirectory()) {
-                    var addDataEntry = function addDataEntry(file, data) {
+                    var addDataEntry = (file, data) => {
                         FILE.child(file).write(data);
                     };
-                    var addURIEntry  = function addURIEntry(file, uri) {
+                    var addURIEntry = (file, uri) => {
                         addDataEntry(file, util.httpGet(uri).responseText);
                     };
                 }
                 else {
                     var zip = services.ZipWriter(FILE.file, File.MODE_CREATE | File.MODE_WRONLY | File.MODE_TRUNCATE);
 
-                    addURIEntry = function addURIEntry(file, uri) {
+                    addURIEntry = (file, uri) => {
                         zip.addEntryChannel(PATH + file, TIME, 9,
                             services.io.newChannel(uri, null, null), false);
                     };
-                    addDataEntry = function addDataEntry(file, data) {// Unideal to an extreme.
+                    addDataEntry = (file, data) => {// Unideal to an extreme.
                         addURIEntry(file, "data:text/plain;charset=UTF-8," + encodeURI(data));
                     };
                 }
@@ -392,12 +396,14 @@ var Help = Module("Help", {
                     addDataEntry(file + ".xhtml", data.join(""));
                 }
 
-                data = [h for (h of highlight)
-                        if (styles.has(h.class) || /^Help/.test(h.class))]
-                    .map(h => h.selector
-                            .replace(/^\[.*?=(.*?)\]/, ".hl-$1")
-                            .replace(/html\|/g, "") + "\t" + "{" + h.cssText + "}")
-                    .join("\n");
+                data = Array.from(highlight)
+                            .filter(h => styles.has(h.class) || /^Help/.test(h.class))
+                            .map(h => (h.selector
+                                        .replace(/^\[.*?=(.*?)\]/, ".hl-$1")
+                                        .replace(/html\|/g, "") +
+                                      "\t" + "{" + h.cssText + "}"))
+                            .join("\n");
+
                 addDataEntry("help.css", data.replace(/chrome:[^ ")]+\//g, ""));
 
                 addDataEntry("tag-map.json", JSON.stringify(help.tags));

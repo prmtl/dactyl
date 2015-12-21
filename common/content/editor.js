@@ -1,4 +1,4 @@
-// Copyright (c) 2008-2014 Kris Maglione <maglione.k at Gmail>
+// Copyright (c) 2008-2015 Kris Maglione <maglione.k at Gmail>
 // Copyright (c) 2006-2009 by Martin Stubenschrott <stubenschrott@vimperator.org>
 //
 // This work is licensed for reuse under an MIT license. Details are
@@ -75,7 +75,7 @@ var Editor = Module("editor", XPCOM(Ci.nsIEditActionListener, ModuleBase), {
             name = 0;
         if (name == "_")
             var res = null;
-        else if (hasOwnProperty(this.selectionRegisters, name))
+        else if (hasOwnProp(this.selectionRegisters, name))
             res = { text: dactyl.clipboardRead(this.selectionRegisters[name]) || "" };
         else if (!/^[0-9]$/.test(name))
             res = this.registers.get(name);
@@ -113,7 +113,7 @@ var Editor = Module("editor", XPCOM(Ci.nsIEditActionListener, ModuleBase), {
                 n = 0;
             if (n == "_")
                 ;
-            else if (hasOwnProperty(this.selectionRegisters, n))
+            else if (hasOwnProp(this.selectionRegisters, n))
                 dactyl.clipboardWrite(value.text, verbose, this.selectionRegisters[n]);
             else if (!/^[0-9]$/.test(n))
                 this.registers.set(n, value);
@@ -784,7 +784,7 @@ var Editor = Module("editor", XPCOM(Ci.nsIEditActionListener, ModuleBase), {
             context.keys = { text: identity, description: editor.bound.getRegister };
 
             context.match = function (r) {
-                return !this.filter || this.filter.contains(r);
+                return !this.filter || this.filter.includes(r);
             };
 
             context.fork("clipboard", 0, this, ctxt => {
@@ -1161,14 +1161,16 @@ var Editor = Module("editor", XPCOM(Ci.nsIEditActionListener, ModuleBase), {
              "<*-Home>", "<*-End>", "<*-PageUp>", "<*-PageDown>",
              "<M-c>", "<M-v>", "<*-Tab>"],
             "Handled by " + config.host,
-            () => Events.PASS_THROUGH);
+            () => Events.PASS,
+            { passThrough: true });
 
         mappings.add([modes.INSERT],
             ["<Space>", "<Return>"], "Expand Insert mode abbreviation",
             function () {
                 editor.expandAbbreviation(modes.INSERT);
-                return Events.PASS_THROUGH;
-            });
+                return Events.PASS;
+            },
+            { passThrough: true });
 
         mappings.add([modes.INSERT],
             ["<C-]>", "<C-5>"], "Expand Insert mode abbreviation",
@@ -1399,9 +1401,11 @@ var Editor = Module("editor", XPCOM(Ci.nsIEditActionListener, ModuleBase), {
                 },
                 validator: function (value) {
                     this.format({}, value);
+
                     let allowed = new RealSet(["column", "file", "line"]);
-                    return [k for (k of util.compileMacro(value).seen)]
-                                .every(k => allowed.has(k));
+                    return util.compileMacro(value)
+                               .seen.difference(allowed)
+                               .size == 0;
                 }
             });
 

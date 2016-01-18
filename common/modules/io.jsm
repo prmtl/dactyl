@@ -235,7 +235,7 @@ var IO = Module("io", {
 
     charsets: Class.Memoize(function () {
         const BASE = "@mozilla.org/intl/unicode/decoder;1?charset=";
-        return Object.keys(Cc).filter(k.startsWith(BASE))
+        return Object.keys(Cc).filter(k => k.startsWith(BASE))
                      .map(k => k.slice(BASE.length));
     }),
 
@@ -1117,7 +1117,7 @@ unlet s:cpo_save
                     return Array.from(io.listJar(uri.JARFile, getDir(uri.JAREntry)),
                                       path => ({
                                           isDirectory: () => path.substr(-1) == "/",
-                                          leafName: /([^\/]*)\/?$/.exec(s)[1]
+                                          leafName: /([^\/]*)\/?$/.exec(path)[1]
                                       }));
                 };
             else

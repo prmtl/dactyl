@@ -2929,7 +2929,8 @@ Buffer.addPageInfoSection("s", "Security", function* (verbose) {
 
         yield ["Verified by", data.caOrg];
 
-        let { host, port } = identity._lastUri;
+        let { host, port } = config.haveGecko("43") ? identity._uri :
+                                                      identity._lastUri;
         if (port == -1)
             port = 443;
 

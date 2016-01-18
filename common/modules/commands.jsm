@@ -798,7 +798,7 @@ var Commands = Module("commands", {
                         let lines = string.split(/\r\n|[\r\n]/);
                         let startLine = context.line;
 
-                        for (let i = 0; i < lines.length && !context.finished; i++) {
+                        for (var i = 0; i < lines.length && !context.finished; i++) {
                             // Deal with editors from Silly OSs.
                             let line = lines[i].replace(/\r$/, "");
 
@@ -836,7 +836,7 @@ var Commands = Module("commands", {
                 function completerToString(completer) {
                     if (completer) {
                         for (let [key, val] of Object.entries(config.completers))
-                             if (completion.bound(val) === completer)
+                             if (completion.bound[val] === completer)
                                  return key;
 
                          return "custom";
@@ -1911,11 +1911,15 @@ var Commands = Module("commands", {
         setCompleter([CommandHive.prototype.get,
                       CommandHive.prototype.remove],
                      [function () {
-                         return Array.from(this, cmd => [c.names, c.description]);
+                         return Array.from(this,
+                                           cmd => [cmd.names,
+                                                   cmd.description]);
                      }]);
         setCompleter([Commands.prototype.get],
                      [function () {
-                         return Array.from(this.iterator(), cmd => [c.names, c.description]);
+                         return Array.from(this.iterator(),
+                                           cmd => [cmd.names,
+                                                   cmd.description]);
                      }]);
     },
     mappings: function initMappings(dactyl, modules, window) {

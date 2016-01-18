@@ -548,7 +548,7 @@ var DOM = Class("DOM", {
         let charset = doc.characterSet;
         let converter = services.CharsetConv(charset);
         for (let cs of form.acceptCharset.split(/\s*,\s*|\s+/)) {
-            let c = services.CharsetConv(cs);
+            let c = cs && services.CharsetConv(cs);
             if (c) {
                 converter = services.CharsetConv(cs);
                 charset = cs;
@@ -1081,9 +1081,11 @@ var DOM = Class("DOM", {
             let params = DEFAULTS[t || "HTML"];
             let args = Object.keys(params);
 
-            update(params, this.constructor.defaults[type],
-                   Ary.toObject(Object.entries(opts)
-                                      .filter(([k]) => k in params)));
+            let props = {}; // FIXME
+            for (let p in opts)
+                if (p in params)
+                    props[p] = opts[p];
+            update(params, this.constructor.defaults[type], props);
 
             apply(evt, "init" + t + "Event", args.map(arg => params[arg]));
             return evt;
